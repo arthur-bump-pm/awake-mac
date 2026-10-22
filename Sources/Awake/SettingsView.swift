@@ -47,9 +47,20 @@ struct SettingsContent: View {
                     Toggle("Launch at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.launchAtLogin = $0 }))
                     Toggle("Let the display sleep while keeping awake", isOn: $model.allowDisplaySleep)
                     Toggle("Turn everything off when the battery is low or the Mac is hot", isOn: $model.safetyEnabled)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Tell me to find an outlet when the battery has")
+                            .font(Theme.body(13))
+                            .foregroundStyle(Theme.bone)
+                        FlowLayout(spacing: 6) {
+                            ForEach(PowerAlerts.warningChoices, id: \.self) { minutes in
+                                Chip(title: "\(TimeText.format(minutes: minutes)) left",
+                                     selected: model.outletWarningMinutes == minutes) { model.outletWarningMinutes = minutes }
+                            }
+                        }
+                    }
                 }
 
-                Card("On the Move", footer: "Low Power Mode applies on battery. The shield turns on the macOS firewall with stealth mode for public Wi-Fi. Both go back to how they were when you're back.") {
+                Card("On the Move", footer: "Low Power Mode applies on battery. The shield turns on the macOS firewall with stealth mode. Both go back to how they were when you're back.") {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Ends")
                             .font(Theme.body(13))
@@ -61,8 +72,55 @@ struct SettingsContent: View {
                         }
                     }
                     Toggle("Turn on Low Power Mode", isOn: $model.moveLowPower)
-                    Toggle("Shield me on public Wi-Fi", isOn: $model.moveShield)
+                    Toggle("Turn on the firewall shield", isOn: $model.moveShield)
                     Toggle("Suggest it when I leave my desk", isOn: $model.deskSuggestions)
+                }
+
+                Card("Networks", footer: "Your hotspot always counts as trusted; any other Wi-Fi is public. There the shield turns on the macOS firewall with stealth mode, and Awake flags sharing that's on. Back on a trusted network, the firewall goes back to how it was. Shortcuts run when you switch; leave one empty to skip it.") {
+                    Toggle("Shield me on public Wi-Fi", isOn: $model.publicShield)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Trusted Wi-Fi")
+                            .font(Theme.body(13))
+                            .foregroundStyle(Theme.bone)
+                        let trusted = model.trustedNetworks.filter { $0 != model.hotspotSSID }
+                        if trusted.isEmpty, model.hotspotSSID.isEmpty {
+                            Text("None yet")
+                                .font(Theme.body(12))
+                                .foregroundStyle(Theme.slate)
+                        }
+                        ForEach(trusted, id: \.self) { name in
+                            HStack {
+                                Text(name)
+                                    .font(Theme.body(12))
+                                    .foregroundStyle(Theme.ash)
+                                    .lineLimit(1)
+                                Spacer()
+                                Button("Remove") { model.untrust(name) }
+                                    .buttonStyle(GhostButtonStyle())
+                                    .accessibilityLabel("Remove \(name)")
+                            }
+                        }
+                        if !model.hotspotSSID.isEmpty {
+                            HStack {
+                                Text(model.hotspotSSID)
+                                    .font(Theme.body(12))
+                                    .foregroundStyle(Theme.ash)
+                                    .lineLimit(1)
+                                Spacer()
+                                Text("Your hotspot")
+                                    .font(Theme.body(11))
+                                    .foregroundStyle(Theme.slate)
+                            }
+                        }
+                    }
+                    currentNetwork
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Run a shortcut")
+                            .font(Theme.body(13))
+                            .foregroundStyle(Theme.bone)
+                        ShortcutField(label: "On public Wi-Fi", text: $model.publicShortcut)
+                        ShortcutField(label: "At home", text: $model.homeShortcut)
+                    }
                 }
 
                 Card("Permission", footer: "Lets Awake switch lid-closed mode, Low Power Mode, sleep and the firewall without asking each time. Nothing else.") {
@@ -158,6 +216,49 @@ struct SettingsContent: View {
         }
         .onChange(of: model.location.isAuthorized) {
             model.refreshNearbyNetworks()
+        }
+    }
+
+    private var currentNetwork: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("This network")
+                    .font(Theme.body(13))
+                    .foregroundStyle(Theme.bone)
+                Text(currentNetworkDetail)
+                    .font(Theme.body(11))
+                    .foregroundStyle(Theme.slate)
+                    .lineLimit(1)
+            }
+            Spacer()
+            if !model.location.isAuthorized {
+                Button(model.location.isDenied ? "Open Settings…" : "Allow…") { model.location.request() }
+                    .buttonStyle(PillButtonStyle())
+            } else if model.profile == .public {
+                Button("Trust current network") { model.trustCurrentNetwork() }
+                    .buttonStyle(GhostButtonStyle())
+            }
+        }
+    }
+
+    private var currentNetworkDetail: String {
+        guard model.location.isAuthorized else { return "Awake needs Location access to see Wi-Fi names." }
+        guard let ssid = model.wifi.ssid else { return "Not on Wi-Fi" }
+        return model.profile == .home ? "\(ssid) · trusted" : "\(ssid) · public"
+    }
+}
+
+private struct ShortcutField: View {
+    let label: String
+    @Binding var text: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(label)
+                .font(Theme.body(12))
+                .foregroundStyle(Theme.ash)
+                .frame(width: 110, alignment: .leading)
+            Field(title: "\(label) shortcut", text: $text, prompt: "Shortcut name")
         }
     }
 }

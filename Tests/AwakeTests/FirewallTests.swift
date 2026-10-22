@@ -112,3 +112,67 @@ final class FirewallTests: XCTestCase {
         }
     }
 }
+
+final class SerialCommandQueueTests: XCTestCase {
+    private final class Log: @unchecked Sendable {
+        private let lock = NSLock()
+        private var entries: [String] = []
+
+        func append(_ entry: String) {
+            lock.lock()
+            entries.append(entry)
+            lock.unlock()
+        }
+
+        var items: [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return entries
+        }
+    }
+
+    func testRunsWorkAndReturnsItsResult() async {
+        let queue = SerialCommandQueue(label: "test.result")
+        let value = await queue.run { 42 }
+        XCTAssertEqual(value, 42)
+        let read: FirewallState?? = await queue.run { nil }
+        XCTAssertEqual(read, .some(nil), "work that returns nil is still work that ran")
+    }
+
+    func testCloseWaitsForTheWorkInFlightThenTurnsAwayLaterWork() {
+        // Quitting during a raise: the restore must come after the command still running, and nothing after it.
+        let queue = SerialCommandQueue(label: "test.close")
+        let log = Log()
+        let started = DispatchSemaphore(value: 0)
+        let raised = expectation(description: "raise finished")
+        Task {
+            let result = await queue.run { () -> Bool in
+                started.signal()
+                Thread.sleep(forTimeInterval: 0.2)
+                log.append("raise")
+                return true
+            }
+            XCTAssertEqual(result, true)
+            raised.fulfill()
+        }
+        started.wait()
+        let seen = queue.close(then: { () -> [String] in
+            log.append("restore")
+            return log.items
+        })
+        XCTAssertEqual(seen, ["raise", "restore"])
+
+        let refused = expectation(description: "late work refused")
+        Task {
+            let late = await queue.run { () -> Bool in
+                log.append("late")
+                return true
+            }
+            XCTAssertNil(late)
+            refused.fulfill()
+        }
+        wait(for: [raised, refused], timeout: 5)
+        XCTAssertEqual(log.items, ["raise", "restore"])
+        XCTAssertEqual(queue.close(then: { 1 }), 1, "closing again still runs the last item")
+    }
+}

@@ -134,7 +134,7 @@ public struct MCPHandler {
             """,
              ["on": ["type": "boolean", "description": "true = on the move, false = back at a desk"]], required: ["on"]),
         tool("awake_status", "Awake Status",
-             "Show Awake's current state: On the Move, keep-awake, lid-closed mode, auto-hotspot, network and battery."),
+             "Show Awake's current state: On the Move, keep-awake, lid-closed mode, auto-hotspot, network (home or public, firewall shield), battery time left or charger, and whether the user's phone can reach this Mac (Tailscale + SSH)."),
         tool("awake_keep_awake", "Keep Awake",
              "Keep the Mac awake (lid open): indefinitely, for some minutes, or while Claude Code is working (it lets the Mac sleep a few minutes after every session goes idle). Or stop.",
              ["mode": ["type": "string", "enum": ["indefinitely", "timed", "while_claude_works", "off"]],

@@ -20,12 +20,18 @@ build/Awake.app/Contents/MacOS/Awake --render-preview <dir>   # panel.png + sett
   - `LidModeController` — `pmset -a disablesleep` plus the one-time sudoers rule at `/etc/sudoers.d/awake` that allows exactly `allowedCommands` (bump `ruleVersion` whenever that list changes). Installed through the macOS admin prompt, validated with `visudo -cf` first.
   - `PowerGuard` — hot-bag guard decisions, Low Power Mode (`pmset -b lowpowermode`), `SystemSleep.sleepNow`.
   - `Firewall` — application firewall + stealth mode read/apply. `DeskDetector` — external display + power, debounced.
+  - `FirewallShield` — pure state of the one firewall shield owner: reasons (On the Move, public Wi-Fi), one snapshot, restore only what it turned on. A snapshot isn't proof: each raise is read back (`didApply`), a relaunch reapplies, and "shielded" means `isOn(firewall:)` against the last unprivileged read.
+  - `NetworkProfile` — home / public / unknown from the SSID, trusted list and hotspot (pure). `ProfileHold` — the profile the shield follows: held through short unknown gaps, lapses after 10 min or when Wi-Fi is off. `ShortcutRunner` — `shortcuts run <name>`.
+  - `CommandRunner` — `CommandRunning` / `ProcessCommandRunner`, and `SerialCommandQueue`: one serial queue for the firewall's commands, which quitting closes after the command in flight.
+  - `SharingCheck` — sharing services that are on, by TCP connects to 127.0.0.1 (`PortConnecting` is injectable).
+  - `Power` — `PowerReading` (raw IOKit values → time left, draw, weak charger; pure), `PowerMonitor` (IOKit), `PowerAlerts` (one warning per discharge / plug-in), `TimeText`.
+  - `RemoteReach` — `TailscaleStatus` (CLI JSON parsing), `TailscaleCLI`, and the reach decision (Tailscale → Remote Login → lid-closed mode; keep-awake alone is "until it sleeps").
   - `AwakeWatch` — who holds sleep assertions (Claude Code = caffeinate whose parent runs from `~/.local/share/claude/versions/`), `ProcessAwakeHold`.
   - `FailoverEngine` — pure state machine for hotspot failover and return (backoff, captive-portal hold). Keep it pure.
   - `ConnectivityProbe` (captive-portal aware), `WiFi` (CoreWLAN; needs Location for SSIDs), `PowerSource`, `HotspotPasswordStore`.
   - `ControlProtocol` / `ControlSocket` — line-delimited JSON over `~/Library/Application Support/Awake/control.sock` (0600, same-uid peers). `MCPHandler` — minimal MCP server logic.
 - `Sources/Awake` — the app (AppKit entry in `Support.swift`, SwiftUI views hosted in AppKit windows):
-  - `AppModel` — all state: On the Move (snapshot → apply → restore), end conditions, guard, desk nudges, network loop, control handler.
+  - `AppModel` — all state: On the Move (snapshot → apply → restore), the firewall shield (one owner, serialized steps on `firewallQueue`, retried every 30 s), network profile + shortcuts, power alerts, reach refresh (sharing ports only at launch, on panel open and on a profile change; Tailscale at most every 5 min otherwise), end conditions, guard, desk nudges, network loop, control handler.
   - `StatusPanel` — status item + borderless panel + Settings window. `PanelView`, `SettingsView`.
   - `DesignSystem` — tokens and controls adapted from the Dimension style (Refero): void/graphite surfaces, hairlines, white = on, DM Sans + Geist (bundled, OFL). Inner corners are concentric: `Theme.innerRadius = panelRadius − panelPadding`. Switches always show their track.
   - `AwakeMark` — Mochi, the two-eye character: shared face geometry (used by `Scripts/IconRenderer`) and the menu bar glyph (asleep = closed lids, awake = eyes up, moving = eyes forward + motion lines).

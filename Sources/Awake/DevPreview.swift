@@ -12,6 +12,7 @@ enum DevPreview {
         _ = NSApplication.shared
         Theme.registerFonts()
         let model = AppModel.shared
+        model.refreshReachNow()
         save(PanelView(model: model, openSettings: {}).environment(\.frostedGlass, false)
                 .padding(28).background(Color(hex: 0x33405e)), to: directory, name: "panel.png")
         save(SettingsContent(model: model).frame(width: 520).background(Theme.void), to: directory, name: "settings.png")

@@ -9,18 +9,26 @@
 
 | Version | Status | Highlights |
 |---|---|---|
-| **1.0.0** | 🚧 in development | On the Move (lid-closed + keep awake + auto-hotspot, Low Power Mode and firewall shield, restores everything after), ends when Claude finishes; keep awake while Claude works; who's keeping your Mac awake; hot-bag guard; café Wi-Fi sign-in detection; desk detection; `awakectl` CLI and MCP server for Claude Code; Dimension-style panel and icon |
+| **1.0.0** | 🚧 in development | On the Move (lid-closed + keep awake + auto-hotspot, Low Power Mode and firewall shield, restores everything after), ends when Claude finishes; keep awake while Claude works; who's keeping your Mac awake; hot-bag guard; café Wi-Fi sign-in detection; desk detection; home vs public Wi-Fi shield; battery time left and weak-charger warning; reach from your phone (Tailscale + SSH); `awakectl` CLI and MCP server for Claude Code; Dimension-style panel and icon |
 
 ## What it does
 
-- **On the Move**: one switch for when you leave your desk. Your Mac keeps running with the lid closed, stays awake, and switches to your iPhone hotspot if the internet drops. On battery it also turns on Low Power Mode, and on public Wi-Fi it turns on the macOS firewall with stealth mode. When you're back, everything goes back to how it was. By default it ends by itself once Claude Code has finished working.
+- **On the Move**: one switch for when you leave your desk. Your Mac keeps running with the lid closed, stays awake, and switches to your iPhone hotspot if the internet drops. It also turns on Low Power Mode (on battery) and the macOS firewall with stealth mode. When you're back, everything goes back to how it was. By default it ends by itself once Claude Code has finished working.
 - **Keep awake**: for 1 or 4 hours, always, or *while Claude works*: Awake watches Claude Code sessions and lets your Mac sleep a few minutes after the last one goes idle.
 - **Who's keeping your Mac awake**: the panel names other apps holding your Mac awake, and warns when lid-closed mode was left on by something else.
 - **Hot-bag guard**: if your Mac warms up with the lid closed it turns on Low Power Mode; if it gets hot or the battery drops to 20%, it turns everything off and puts the Mac to sleep.
 - **Café Wi-Fi**: Awake tells a Wi-Fi sign-in page apart from a dead connection, so it shows "Sign in" instead of burning your phone's data.
 - **Auto-hotspot**: when Wi-Fi drops, or stays connected with no internet, Awake joins your iPhone's Personal Hotspot within seconds, and goes back to Wi-Fi when it's healthy again.
+- **Home vs public Wi-Fi**: mark your own networks as trusted (your hotspot always is). On any other Wi-Fi, Awake turns on the macOS firewall with stealth mode, points out sharing that's on (Screen Sharing, File Sharing, Remote Login), and can run a Shortcut; back on a trusted network it puts the firewall back and can run another.
+- **Battery**: time left on battery in the panel, a heads-up when it falls under 15, 30 or 60 minutes, and a warning when a charger is too weak to keep up.
+- **Reach from your phone**: shows whether your phone can reach this Mac over Tailscale + SSH (and that it stays on with the lid closed), with a Copy SSH button, or the first thing that's missing.
 - **Desk detection**: unplug from your monitor and charger with the lid open and Awake offers On the Move; come back and it offers to turn it off.
 - **Claude Code integration**: an MCP server, so a Claude session can switch On the Move when you tell it you're leaving.
+
+## Known limitations
+
+- A network is trusted by its Wi-Fi name, which anyone can copy: a stranger's hotspot with the same name as one of your trusted networks counts as trusted, and the shield stays down there.
+- Failing over between public Wi-Fi and your own hotspot switches the shield each time: down on the hotspot, up again back on the public Wi-Fi.
 
 ## Install
 
@@ -57,7 +65,7 @@ awakectl hotspot on|off|join           # auto-hotspot, or join now
 | What | When | Why |
 |---|---|---|
 | Your password, once | First time something needs it | Installs `/etc/sudoers.d/awake`, which allows exactly these commands without a password, and nothing else: `pmset -a disablesleep 0/1`, `pmset -b lowpowermode 0/1`, `pmset sleepnow`, and the firewall's `--setglobalstate on/off` and `--setstealthmode on/off`. It is checked with `visudo` before it goes live. |
-| Location access | When you set up auto-hotspot | macOS hides Wi-Fi network names from apps without it. Awake never reads your location. |
+| Location access | When you set up auto-hotspot or trusted networks | macOS hides Wi-Fi network names from apps without it. Awake never reads your location. |
 | Notifications | First launch | Tells you when it switched networks, ended On the Move, or turned something off for safety. |
 | Hotspot password | Optional, in Settings | Stored in your login keychain. |
 

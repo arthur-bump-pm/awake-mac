@@ -6,10 +6,12 @@ struct PanelView: View {
     @ObservedObject var model: AppModel
     var openSettings: () -> Void
     @Environment(\.frostedGlass) private var frostedGlass
+    @State private var copiedSSH = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            statusLines
             ForEach(model.alerts) { alert in
                 AlertRow(alert: alert) { Task { await model.perform(alert) } }
             }
@@ -61,16 +63,39 @@ struct PanelView: View {
                 .fill(statusColor)
                 .frame(width: 8, height: 8)
                 .shadow(color: statusColor.opacity(0.6), radius: 5)
+            // Each line carries its own battery text on the right, so a long charger note doesn't squeeze the
+            // network name above it.
             VStack(alignment: .leading, spacing: 1) {
-                Text(model.networkStatus)
-                    .font(Theme.body(13, weight: .medium))
-                    .foregroundStyle(Theme.bone)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(model.awakeStatus)
-                    .font(Theme.body(11))
-                    .foregroundStyle(Theme.slate)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(model.networkStatus)
+                        .font(Theme.body(13, weight: .medium))
+                        .foregroundStyle(Theme.bone)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                    if let percent = model.power.percent {
+                        Text("\(percent)%")
+                            .font(Theme.body(12, weight: .medium))
+                            .foregroundStyle(Theme.ash)
+                            .monospacedDigit()
+                            .fixedSize()
+                            .accessibilityLabel("Battery \(percent) percent")
+                    }
+                }
+                HStack(spacing: 6) {
+                    Text(model.awakeStatus)
+                        .font(Theme.body(11))
+                        .foregroundStyle(Theme.slate)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    if model.power.percent != nil, let detail = model.power.detail {
+                        Text(detail)
+                            .font(Theme.body(11))
+                            .foregroundStyle(powerNeedsAttention ? Theme.attention : Theme.slate)
+                            .monospacedDigit()
+                            .fixedSize()
+                    }
+                }
                 if model.claudeWorking > 0 {
                     Text(model.claudeWorking == 1 ? "1 Claude session working" : "\(model.claudeWorking) Claude sessions working")
                         .font(Theme.body(11))
@@ -78,18 +103,66 @@ struct PanelView: View {
                         .lineLimit(1)
                 }
             }
-            Spacer(minLength: 6)
-            if let battery = PowerSource.batteryLevel() {
-                Text("\(battery)%")
-                    .font(Theme.body(12, weight: .medium))
-                    .foregroundStyle(Theme.ash)
-                    .monospacedDigit()
-                    .accessibilityLabel("Battery \(battery) percent")
-            }
         }
         .padding(.horizontal, 6)
         .padding(.top, 4)
         .accessibilityElement(children: .combine)
+    }
+
+    /// The network line (home or public) and whether the owner's phone can reach this Mac.
+    @ViewBuilder private var statusLines: some View {
+        let profile = model.profileStatus
+        let reach = model.reach
+        if profile != nil || reach != nil {
+            VStack(alignment: .leading, spacing: 6) {
+                if let profile {
+                    StatusLine(text: profile) {
+                        if model.profile == .public, model.wifi.ssid != nil {
+                            Button("Trust") { model.trustCurrentNetwork() }
+                                .buttonStyle(GhostButtonStyle())
+                                .help("Trust this network")
+                                .accessibilityLabel("Trust this network")
+                        }
+                    }
+                }
+                if let reach {
+                    StatusLine(text: reach.text) {
+                        if let action = reachAction(reach) {
+                            Button(action) {
+                                model.performReachAction()
+                                if reach.isReachable { showCopied() }
+                            }
+                            .buttonStyle(GhostButtonStyle())
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 6)
+        }
+    }
+
+    private func reachAction(_ reach: RemoteReach) -> String? {
+        switch reach {
+        case .reachable, .untilSleep: copiedSSH ? "Copied" : "Copy SSH"
+        case .remoteLoginOff: "Open Settings"
+        case .tailscaleOff: "Open Tailscale"
+        case .tailscaleMissing: nil
+        }
+    }
+
+    private func showCopied() {
+        copiedSSH = true
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            copiedSSH = false
+        }
+    }
+
+    /// Battery running low (under the warning threshold) or a charger that can't keep up.
+    private var powerNeedsAttention: Bool {
+        let power = model.power
+        if power.chargerTooWeak { return true }
+        return power.onBattery && (power.minutesLeft.map { $0 < model.outletWarningMinutes } ?? false)
     }
 
     private var moveCard: some View {
@@ -184,6 +257,25 @@ private struct RowLabel: View {
             }
         }
         .padding(.vertical, 2)
+    }
+}
+
+/// One compact line of status with an optional ghost action on the right.
+private struct StatusLine<Action: View>: View {
+    let text: String
+    @ViewBuilder let action: Action
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(text)
+                .font(Theme.body(12))
+                .foregroundStyle(Theme.ash)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 6)
+            action
+        }
+        .frame(minHeight: 24)
     }
 }
 

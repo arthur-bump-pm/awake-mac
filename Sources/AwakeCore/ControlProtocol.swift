@@ -44,6 +44,21 @@ public struct AwakeStatus: Codable, Sendable, Equatable {
     public var otherAwakeApps: [String]
     public var captivePortal: Bool
     public var atDesk: Bool
+    /// Home (a trusted Wi-Fi or the user's hotspot), public (any other Wi-Fi) or unknown (no Wi-Fi name).
+    public var networkProfile: NetworkProfile?
+    /// The firewall shield is on: up for On the Move or public Wi-Fi, and the firewall, as last read, has the firewall
+    /// and stealth mode on.
+    public var firewallShield: Bool?
+    /// Estimated battery time left, on battery only.
+    public var batteryMinutesLeft: Int?
+    /// The plugged-in charger's rating.
+    public var chargerWatts: Int?
+    /// Plugged in, but the charger can't keep up and the battery is draining.
+    public var chargerTooWeak: Bool?
+    /// The owner's phone can reach this Mac now: Tailscale online and Remote Login on. `reach` says whether it lasts.
+    public var reachable: Bool?
+    /// One line about reach, e.g. "Reachable · Tailscale + SSH" or "Remote Login is off".
+    public var reach: String?
     /// One or two plain sentences for people (and for Claude to relay).
     public var summary: String
 
@@ -51,7 +66,9 @@ public struct AwakeStatus: Codable, Sendable, Equatable {
                 lidClosedModeSetUp: Bool, autoHotspot: Bool, hotspot: String?, hotspotReady: Bool,
                 online: Bool?, wifi: String?, onHotspot: Bool, batteryPercent: Int?, onBattery: Bool,
                 keepAwakeWhileClaudeWorks: Bool = false, claudeWorking: Int = 0, otherAwakeApps: [String] = [],
-                captivePortal: Bool = false, atDesk: Bool = false, summary: String) {
+                captivePortal: Bool = false, atDesk: Bool = false, networkProfile: NetworkProfile? = nil,
+                firewallShield: Bool? = nil, batteryMinutesLeft: Int? = nil, chargerWatts: Int? = nil,
+                chargerTooWeak: Bool? = nil, reachable: Bool? = nil, reach: String? = nil, summary: String) {
         self.onTheMove = onTheMove
         self.keepAwake = keepAwake
         self.keepAwakeMinutesLeft = keepAwakeMinutesLeft
@@ -70,6 +87,13 @@ public struct AwakeStatus: Codable, Sendable, Equatable {
         self.otherAwakeApps = otherAwakeApps
         self.captivePortal = captivePortal
         self.atDesk = atDesk
+        self.networkProfile = networkProfile
+        self.firewallShield = firewallShield
+        self.batteryMinutesLeft = batteryMinutesLeft
+        self.chargerWatts = chargerWatts
+        self.chargerTooWeak = chargerTooWeak
+        self.reachable = reachable
+        self.reach = reach
         self.summary = summary
     }
 }

@@ -57,6 +57,8 @@ struct PanelAlert: Identifiable, Equatable {
         case foreignLidMode
         case leftDesk
         case backAtDesk
+        case sharing
+        case locationAccess
     }
 
     let kind: Kind
@@ -80,9 +82,26 @@ final class AppModel: ObservableObject {
     let lidMode = LidModeController()
     let location = LocationAccess()
 
-    @Published private(set) var wifi = WiFiState(isPoweredOn: true, ssid: nil)
+    @Published private(set) var wifi = WiFiState(isPoweredOn: true, ssid: nil) {
+        didSet { updateProfile() }
+    }
     /// nil until the first check finishes.
     @Published private(set) var connectivity: Connectivity?
+    /// From the current Wi-Fi name; see `heldProfile` for the one the shield and shortcuts follow.
+    @Published private(set) var profile: NetworkProfile = .unknown
+    /// The one owner of the firewall shield, persisted so a crash can still be undone.
+    @Published private(set) var shield: FirewallShield {
+        didSet { defaults.set(try? JSONEncoder().encode(shield), forKey: Keys.firewallShield) }
+    }
+    /// The firewall as last read (unprivileged, off the main actor): after each shield step, while the shield is up,
+    /// and when the panel opens. Nil before the first read or when it can't be read.
+    @Published private(set) var firewallNow: FirewallState?
+    /// Sharing services listening on this Mac, from the last check.
+    @Published private(set) var sharingOn: [SharingService] = []
+    /// nil when Tailscale isn't installed (or before the first check, see `reachChecked`).
+    @Published private(set) var tailscale: TailscaleStatus?
+    @Published private(set) var reachChecked = false
+    @Published private(set) var power: PowerReading
     @Published private(set) var nearbyNetworks: [String] = []
     @Published private(set) var otherAwakeApps: [String] = []
     @Published private(set) var claudeWorking = 0
@@ -125,10 +144,36 @@ final class AppModel: ObservableObject {
         didSet { defaults.set(moveLowPower, forKey: Keys.moveLowPower) }
     }
     @Published var moveShield: Bool {
-        didSet { defaults.set(moveShield, forKey: Keys.moveShield) }
+        didSet {
+            defaults.set(moveShield, forKey: Keys.moveShield)
+            shieldSoon()
+        }
     }
     @Published var deskSuggestions: Bool {
         didSet { defaults.set(deskSuggestions, forKey: Keys.deskSuggestions) }
+    }
+    /// Wi-Fi names that count as home. The hotspot always does too.
+    @Published private(set) var trustedNetworks: [String] {
+        didSet {
+            defaults.set(trustedNetworks, forKey: Keys.trustedNetworks)
+            updateProfile()
+        }
+    }
+    @Published var publicShield: Bool {
+        didSet {
+            defaults.set(publicShield, forKey: Keys.publicShield)
+            shieldSoon()
+        }
+    }
+    /// Shortcuts to run when switching to public or home Wi-Fi; empty = none.
+    @Published var publicShortcut: String {
+        didSet { defaults.set(publicShortcut, forKey: Keys.publicShortcut) }
+    }
+    @Published var homeShortcut: String {
+        didSet { defaults.set(homeShortcut, forKey: Keys.homeShortcut) }
+    }
+    @Published var outletWarningMinutes: Int {
+        didSet { defaults.set(outletWarningMinutes, forKey: Keys.outletWarningMinutes) }
     }
 
     private enum Keys {
@@ -147,10 +192,17 @@ final class AppModel: ObservableObject {
         static let lidModeSetByAwake = "lidModeSetByAwake"
         static let lowPowerSetByGuard = "lowPowerSetByGuard"
         static let didRegisterLoginItem = "didRegisterLoginItem"
+        static let trustedNetworks = "trustedNetworks"
+        static let publicShield = "publicShield"
+        static let publicShortcut = "publicShortcut"
+        static let homeShortcut = "homeShortcut"
+        static let outletWarningMinutes = "outletWarningMinutes"
+        static let firewallShield = "firewallShield"
+        static let lastProfile = "lastProfile"
     }
 
     /// What On the Move changed, so "back at desk" can put it back. Optional fields are only
-    /// set for settings Awake actually changed.
+    /// set for settings Awake actually changed. The firewall isn't here: the shield owns it.
     private struct MoveSnapshot: Codable {
         enum KeepAwake: Codable, Equatable {
             case off, indefinitely, whileClaudeWorks
@@ -161,14 +213,42 @@ final class AppModel: ObservableObject {
         var lidMode: Bool
         var autoHotspot: Bool
         var lowPowerOnBattery: Bool?
+        /// Legacy, read only: builds before the shield kept the firewall's previous state here. `start()` hands it
+        /// to the shield, and `saveSnapshot` never writes it.
         var firewall: FirewallState?
     }
+
+    static let sharingSettingsURL = URL(string: "x-apple.systempreferences:com.apple.Sharing-Settings.extension")!
 
     private let defaults: UserDefaults
     private let wifiControl: WiFiControlling = CoreWLANWiFi()
     private let probe: ConnectivityProbing = CaptiveAwareProbe()
     private let lowPower = LowPowerModeController()
     private let firewall = FirewallController()
+    /// Every firewall command (shield steps and the status read) runs here, one at a time, so quitting can wait for
+    /// the one in flight before putting the firewall back, and nothing starts after that.
+    private let firewallQueue = SerialCommandQueue(label: "Awake.firewall")
+    private var isReadingFirewall = false
+    private var isQuitting = false
+    private let shortcuts = ShortcutRunner()
+    private let tailscaleCLI = TailscaleCLI()
+    private let sharingCheck = SharingCheck()
+    private var powerAlerts = PowerAlerts()
+    /// The last definite profile, held through short moments without a Wi-Fi name (waking, roaming) so the shield
+    /// doesn't drop and come back; lapses after 10 minutes of unknown or when Wi-Fi is off. Starts unknown at launch.
+    private var profileHold = ProfileHold()
+    private var heldProfile: NetworkProfile { profileHold.profile }
+    private var didFirstNetworkCheck = false
+    private var isRefreshingReach = false
+    private var reachCheckIncludesSharing = false
+    /// The sharing check was asked for while a Tailscale-only check was running; it runs once that one ends.
+    private var reachRecheck = false
+    private var lastReachCheck = Date.distantPast
+    /// Tailscale is re-checked at most this often unless the panel opens or the profile changes.
+    private static let reachInterval: TimeInterval = 5 * 60
+    /// Shield steps run one at a time, like On the Move's transitions; shortcuts queue the same way.
+    private var shieldTransition: Task<[String], Never>?
+    private var shortcutRun: Task<Void, Never>?
     private var engine = FailoverEngine()
     private var desk = DeskDetector()
     private let pathMonitor = NWPathMonitor()
@@ -190,7 +270,8 @@ final class AppModel: ObservableObject {
     private init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         defaults.register(defaults: [Keys.returnToWiFi: true, Keys.safety: true, Keys.moveLowPower: true,
-                                     Keys.moveShield: true, Keys.deskSuggestions: true])
+                                     Keys.moveShield: true, Keys.deskSuggestions: true, Keys.publicShield: true,
+                                     Keys.outletWarningMinutes: PowerAlerts.defaultWarning])
         onTheMove = defaults.bool(forKey: Keys.onTheMove)
         autoHotspot = defaults.bool(forKey: Keys.autoHotspot)
         hotspotSSID = defaults.string(forKey: Keys.hotspotSSID) ?? ""
@@ -201,6 +282,15 @@ final class AppModel: ObservableObject {
         moveLowPower = defaults.bool(forKey: Keys.moveLowPower)
         moveShield = defaults.bool(forKey: Keys.moveShield)
         deskSuggestions = defaults.bool(forKey: Keys.deskSuggestions)
+        trustedNetworks = defaults.stringArray(forKey: Keys.trustedNetworks) ?? []
+        publicShield = defaults.bool(forKey: Keys.publicShield)
+        publicShortcut = defaults.string(forKey: Keys.publicShortcut) ?? ""
+        homeShortcut = defaults.string(forKey: Keys.homeShortcut) ?? ""
+        let warning = defaults.integer(forKey: Keys.outletWarningMinutes)
+        outletWarningMinutes = PowerAlerts.warningChoices.contains(warning) ? warning : PowerAlerts.defaultWarning
+        shield = defaults.data(forKey: Keys.firewallShield)
+            .flatMap { try? JSONDecoder().decode(FirewallShield.self, from: $0) } ?? FirewallShield()
+        power = PowerMonitor.read()
         keepAwake = KeepAwakeController(allowDisplaySleep: defaults.bool(forKey: Keys.allowDisplaySleep))
 
         Publishers.Merge3(keepAwake.objectWillChange, lidMode.objectWillChange, location.objectWillChange)
@@ -210,6 +300,7 @@ final class AppModel: ObservableObject {
 
     func start() {
         Notifier.setUp()
+        adoptLegacyFirewallSnapshot()
         if !defaults.bool(forKey: Keys.didRegisterLoginItem) {
             defaults.set(true, forKey: Keys.didRegisterLoginItem)
             launchAtLogin = true
@@ -241,6 +332,9 @@ final class AppModel: ObservableObject {
         }
 
         refreshAwakeWatch()
+        refreshPower()
+        refreshReach(sharing: true)
+        refreshFirewall()
         tickTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
@@ -255,10 +349,17 @@ final class AppModel: ObservableObject {
         controlServer?.stop()
         if onTheMove {
             let snapshot = loadSnapshot()
-            Self.restorePrivileged(snapshot, lowPower: lowPower, firewall: firewall)
+            Self.restorePrivileged(snapshot, lowPower: lowPower)
             defaults.removeObject(forKey: Keys.moveSnapshot)
             onTheMove = false
             autoHotspot = snapshot?.autoHotspot ?? autoHotspot
+        }
+        // Waits for a shield command in flight (a raise could otherwise finish after the restore and leave the
+        // firewall on with no snapshot), restores, and stops any shield step still queued.
+        isQuitting = true
+        let shield = self.shield, firewall = self.firewall
+        if firewallQueue.close(then: { shield.isUp && Self.restoreFirewall(shield, firewall: firewall) }) {
+            self.shield.didLower()
         }
         if defaults.bool(forKey: Keys.lowPowerSetByGuard) {
             try? lowPower.setForBattery(false)
@@ -280,6 +381,9 @@ final class AppModel: ObservableObject {
     func panelWillOpen() {
         lidMode.refresh()
         refreshAwakeWatch()
+        refreshPower()
+        refreshReach(sharing: true)
+        refreshFirewall()
         checkSoon()
     }
 
@@ -320,10 +424,54 @@ final class AppModel: ObservableObject {
         return "Sleeps normally"
     }
 
+    /// The shield is up and the firewall, as last read, really is shielded (the user can switch it off behind it).
+    var isShielded: Bool { shield.isOn(firewall: firewallNow) }
+
+    /// The public Wi-Fi shield is on, but without Location access every network reads as unknown, so it never engages.
+    var shieldNeedsLocation: Bool { publicShield && !location.isAuthorized }
+
+    /// The panel's network line: "Public network · shielded", "Home network", or nil when there's nothing to say.
+    var profileStatus: String? {
+        switch profile {
+        case .home:
+            return isShielded ? "Home network · shielded" : "Home network"
+        case .public:
+            if isShielded { return "Public network · shielded" }
+            return publicShield ? "Public network · not shielded" : "Public network"
+        case .unknown:
+            return isShielded ? "Firewall shield on" : nil
+        }
+    }
+
+    private var profileSentence: String? {
+        switch profile {
+        case .home: isShielded ? "Home network, firewall shield on." : "Home network."
+        case .public: isShielded ? "Public network, firewall shield on." : "Public network, firewall shield off."
+        case .unknown: isShielded ? "Firewall shield on." : nil
+        }
+    }
+
+    /// Whether the owner's phone can reach this Mac; nil until the first check. Only lid-closed mode counts as
+    /// staying on: keep-awake ends when the lid closes.
+    var reach: RemoteReach? {
+        guard reachChecked else { return nil }
+        return RemoteReach.evaluate(tailscale: tailscale, remoteLogin: sharingOn.contains(.remoteLogin),
+                                    lidClosedMode: lidMode.isEnabled, user: NSUserName())
+    }
+
     var alerts: [PanelAlert] {
         var alerts: [PanelAlert] = []
         if let url = portalURL {
             alerts.append(PanelAlert(kind: .signIn(url), message: "This Wi-Fi wants you to sign in.", action: "Sign In"))
+        }
+        if profile == .public, !sharingOn.isEmpty {
+            alerts.append(PanelAlert(kind: .sharing,
+                                     message: "Sharing on this network: \(sharingOn.map(\.title).joined(separator: ", "))",
+                                     action: "Open Settings"))
+        }
+        if shieldNeedsLocation {
+            alerts.append(PanelAlert(kind: .locationAccess, message: "The public Wi-Fi shield needs Location access.",
+                                     action: "Allow"))
         }
         if lidMode.isEnabled, !defaults.bool(forKey: Keys.lidModeSetByAwake) {
             alerts.append(PanelAlert(kind: .foreignLidMode, message: "Lid-closed mode was turned on outside Awake.", action: "Turn Off"))
@@ -351,19 +499,20 @@ final class AppModel: ObservableObject {
         case .backAtDesk:
             deskNudge = nil
             await setOnTheMoveFromMenu(false)
+        case .sharing:
+            NSWorkspace.shared.open(Self.sharingSettingsURL)
+        case .locationAccess:
+            location.request()
         }
     }
 
     nonisolated static func format(_ seconds: TimeInterval) -> String {
-        let minutes = Int((seconds / 60).rounded(.up))
-        guard minutes >= 60 else { return "\(minutes) min" }
-        let hours = minutes / 60, rest = minutes % 60
-        return rest == 0 ? "\(hours) hr" : "\(hours) hr \(rest) min"
+        TimeText.format(seconds)
     }
 
     func status() -> AwakeStatus {
-        let battery = PowerSource.batteryLevel()
-        let onBattery = PowerSource.isOnBattery()
+        let power = PowerMonitor.read()
+        let reach = self.reach
         var sentences: [String] = []
         if onTheMove {
             sentences.append("On the Move is on and ends \(moveEnd.phrase).")
@@ -386,21 +535,37 @@ final class AppModel: ObservableObject {
                              ?? "Auto-hotspot is on (\(hotspotSSID)).")
         }
         sentences.append(networkStatus + ".")
+        if let profileSentence {
+            sentences.append(profileSentence)
+        }
+        if shieldNeedsLocation {
+            sentences.append("The public Wi-Fi shield can't tell public from trusted Wi-Fi without Location access: allow it in Awake Settings.")
+        }
+        if profile == .public, !sharingOn.isEmpty {
+            sentences.append("Sharing is on: \(sharingOn.map(\.title).joined(separator: ", ")).")
+        }
         if !otherAwakeApps.isEmpty {
             sentences.append("Also keeping it awake: \(otherAwakeApps.joined(separator: ", ")).")
         }
-        if let battery {
-            sentences.append("Battery \(battery)%\(onBattery ? "" : ", on power").")
+        if let battery = power.sentence {
+            sentences.append(battery)
         }
+        if let reach {
+            sentences.append(reach.sentence)
+        }
+        let hasBattery = power.percent != nil
         return AwakeStatus(
             onTheMove: onTheMove, keepAwake: keepAwake.isActive,
             keepAwakeMinutesLeft: keepAwake.remainingTime.map { Int(($0 / 60).rounded(.up)) },
             lidClosedMode: lidMode.isEnabled, lidClosedModeSetUp: lidMode.isSetUp,
             autoHotspot: autoHotspot, hotspot: hotspotSSID.isEmpty ? nil : hotspotSSID,
             hotspotReady: hotspotIsConfigured, online: online, wifi: wifi.ssid, onHotspot: isOnHotspot,
-            batteryPercent: battery, onBattery: onBattery, keepAwakeWhileClaudeWorks: keepAwakeWhileClaudeWorks,
+            batteryPercent: power.percent, onBattery: power.onBattery, keepAwakeWhileClaudeWorks: keepAwakeWhileClaudeWorks,
             claudeWorking: claudeWorking, otherAwakeApps: otherAwakeApps, captivePortal: portalURL != nil,
-            atDesk: atDesk, summary: sentences.joined(separator: " "))
+            atDesk: atDesk, networkProfile: profile, firewallShield: isShielded,
+            batteryMinutesLeft: power.minutesLeft, chargerWatts: power.adapterWatts,
+            chargerTooWeak: hasBattery && power.externalConnected ? power.chargerTooWeak : nil,
+            reachable: reach?.isReachable, reach: reach?.text, summary: sentences.joined(separator: " "))
     }
 
     // MARK: - Control (awakectl / MCP)
@@ -488,38 +653,22 @@ final class AppModel: ObservableObject {
             notes.append("Lid-closed mode is off (\(problem)), so closing the lid will still put the Mac to sleep.")
         }
 
-        if lidMode.isSetUp {
-            let lowPower = self.lowPower, firewall = self.firewall
-            let wantLowPower = moveLowPower, wantShield = moveShield
-            let changes = await Task.detached { () -> (Bool?, FirewallState?, [String]) in
-                var problems: [String] = []
-                var previousLowPower: Bool?
-                var previousFirewall: FirewallState?
-                if wantLowPower, let current = lowPower.isOnForBattery(), !current {
-                    do {
-                        try lowPower.setForBattery(true)
-                        previousLowPower = current
-                    } catch {
-                        problems.append("Low Power Mode didn't switch on.")
-                    }
+        if lidMode.isSetUp, moveLowPower {
+            let lowPower = self.lowPower
+            let changes = await Task.detached { () -> (Bool?, [String]) in
+                guard let current = lowPower.isOnForBattery(), !current else { return (nil, []) }
+                do {
+                    try lowPower.setForBattery(true)
+                    return (current, [])
+                } catch {
+                    return (nil, ["Low Power Mode didn't switch on."])
                 }
-                let shielded = FirewallState(enabled: true, stealth: true)
-                if wantShield, let current = firewall.read(), current != shielded {
-                    do {
-                        try firewall.apply(shielded)
-                        previousFirewall = current
-                    } catch {
-                        problems.append("The firewall shield didn't switch on.")
-                    }
-                }
-                return (previousLowPower, previousFirewall, problems)
             }.value
             if snapshot.lowPowerOnBattery == nil { snapshot.lowPowerOnBattery = changes.0 }
-            if snapshot.firewall == nil { snapshot.firewall = changes.1 }
-            notes += changes.2
+            notes += changes.1
             saveSnapshot(snapshot)
         }
-        return notes
+        return notes + (await updateShield())
     }
 
     private var currentKeepAwake: MoveSnapshot.KeepAwake {
@@ -555,25 +704,21 @@ final class AppModel: ObservableObject {
         if snapshot?.lidMode != true, lidMode.isEnabled, let problem = await lidModeProblem(false) {
             notes.append("Couldn't turn lid-closed mode off: \(problem)")
         }
-        let lowPower = self.lowPower, firewall = self.firewall
+        let lowPower = self.lowPower
         let undoGuardLowPower = defaults.bool(forKey: Keys.lowPowerSetByGuard) && snapshot?.lowPowerOnBattery == nil
         defaults.set(false, forKey: Keys.lowPowerSetByGuard)
         await Task.detached {
-            Self.restorePrivileged(snapshot, lowPower: lowPower, firewall: firewall)
+            Self.restorePrivileged(snapshot, lowPower: lowPower)
             if undoGuardLowPower {
                 try? lowPower.setForBattery(false)
             }
         }.value
-        return notes
+        return notes + (await updateShield())
     }
 
-    nonisolated private static func restorePrivileged(_ snapshot: MoveSnapshot?, lowPower: LowPowerModeController,
-                                                      firewall: FirewallController) {
+    nonisolated private static func restorePrivileged(_ snapshot: MoveSnapshot?, lowPower: LowPowerModeController) {
         if let previous = snapshot?.lowPowerOnBattery {
             try? lowPower.setForBattery(previous)
-        }
-        if let previous = snapshot?.firewall {
-            try? firewall.apply(previous)
         }
     }
 
@@ -582,7 +727,218 @@ final class AppModel: ObservableObject {
     }
 
     private func saveSnapshot(_ snapshot: MoveSnapshot) {
+        var snapshot = snapshot
+        snapshot.firewall = nil
         defaults.set(try? JSONEncoder().encode(snapshot), forKey: Keys.moveSnapshot)
+    }
+
+    /// A crash during On the Move under a build before the shield owned the firewall left the firewall shielded,
+    /// with its previous state only in On the Move's snapshot. The shield takes that over, so it gets put back
+    /// instead of being snapshotted as the "previous" state and kept on.
+    private func adoptLegacyFirewallSnapshot() {
+        guard let snapshot = loadSnapshot(), let legacy = snapshot.firewall else { return }
+        shield.adoptLegacy(legacy)
+        saveSnapshot(snapshot)
+    }
+
+    // MARK: - Firewall shield
+
+    /// The shield's reasons: On the Move with its shield setting, or public Wi-Fi with that setting.
+    private var shieldWanted: Bool {
+        FirewallShield.isWanted(onTheMove: onTheMove, moveShield: moveShield, profile: heldProfile,
+                                publicShield: publicShield)
+    }
+
+    /// Brings the firewall shield in line with its reasons. Steps run one at a time, so a raise and a lower can't
+    /// interleave; each reads the reasons when it runs, so queued steps collapse. Returns notes about failures.
+    @discardableResult
+    func updateShield() async -> [String] {
+        let previous = shieldTransition
+        let transition = Task { @MainActor in
+            _ = await previous?.value
+            return await self.stepShield()
+        }
+        shieldTransition = transition
+        return await transition.value
+    }
+
+    private func shieldSoon() {
+        Task { await updateShield() }
+    }
+
+    /// One shield step. Its commands run on `firewallQueue`; after a quit has started, it does nothing more.
+    private func stepShield() async -> [String] {
+        guard !isQuitting else { return [] }
+        let firewall = self.firewall
+        let step = shield.step(wanted: shieldWanted)
+        switch step {
+        case .none:
+            return []
+        case .raise, .reapply:
+            // Needs the admin permission; without it the panel says "not shielded".
+            guard lidMode.isSetUp else { return [] }
+            if step == .raise {
+                guard let read = await firewallQueue.run({ firewall.read() }), !isQuitting else { return [] }
+                guard let current = read else { return ["The firewall shield didn't switch on."] }
+                shield.willRaise(from: current)
+            }
+            // Read the firewall back: a raise can fail partway, so the snapshot alone proves nothing. Nothing applied
+            // drops the snapshot; a partial raise keeps it, and the next tick tries again.
+            guard let observed = await firewallQueue.run({ () -> FirewallState? in
+                try? firewall.apply(FirewallShield.shielded)
+                return firewall.read()
+            }) else { return [] }
+            firewallNow = observed
+            shield.didApply(observed: observed)
+            return isShielded ? [] : ["The firewall shield didn't switch on."]
+        case .lower:
+            return await lowerShield() ? [] : ["Couldn't turn the firewall shield off."]
+        }
+    }
+
+    /// Returns false (and keeps the snapshot for another try) if the firewall couldn't be put back.
+    private func lowerShield() async -> Bool {
+        let shield = self.shield, firewall = self.firewall
+        guard let restored = await firewallQueue.run({ Self.restoreFirewall(shield, firewall: firewall) }) else {
+            return false  // quitting: shutdown restores instead
+        }
+        if restored {
+            self.shield.didLower()
+        }
+        return restored
+    }
+
+    /// Re-reads the firewall without privileges, behind any shield step, so "shielded" follows the real firewall.
+    private func refreshFirewall() {
+        guard !isReadingFirewall else { return }
+        isReadingFirewall = true
+        let firewall = self.firewall
+        Task {
+            let read = await firewallQueue.run { firewall.read() }
+            isReadingFirewall = false
+            if let read, read != firewallNow {
+                firewallNow = read
+            }
+        }
+    }
+
+    nonisolated private static func restoreFirewall(_ shield: FirewallShield, firewall: FirewallController) -> Bool {
+        guard let current = firewall.read() else { return false }
+        return (try? firewall.apply(shield.restoreTarget(current: current))) != nil
+    }
+
+    // MARK: - Home vs public
+
+    func trustCurrentNetwork() {
+        guard let ssid = wifi.ssid, !trustedNetworks.contains(ssid) else { return }
+        trustedNetworks.append(ssid)
+    }
+
+    func untrust(_ ssid: String) {
+        trustedNetworks.removeAll { $0 == ssid }
+    }
+
+    /// Re-decides the profile. A change of the held profile moves the shield and re-checks reach and sharing; a
+    /// change to home or public also runs that profile's shortcut (once per change, also across relaunches).
+    private func updateProfile() {
+        let decided = NetworkProfile.decide(ssid: wifi.ssid, trusted: trustedNetworks, hotspot: hotspotSSID)
+        if profile != decided {
+            profile = decided
+        }
+        let previous = heldProfile
+        let held = profileHold.observe(decided, wifiOn: wifi.isPoweredOn, now: .now)
+        guard held != previous else { return }
+        shieldSoon()
+        refreshReach(sharing: true)
+        guard held != .unknown, defaults.string(forKey: Keys.lastProfile) != held.rawValue else { return }
+        defaults.set(held.rawValue, forKey: Keys.lastProfile)
+        runShortcut(held == .public ? publicShortcut : homeShortcut)
+    }
+
+    /// Queues a shortcut behind any still running, off the main actor. Empty names are skipped.
+    private func runShortcut(_ name: String) {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        let previous = shortcutRun, shortcuts = self.shortcuts
+        shortcutRun = Task { @MainActor in
+            _ = await previous?.value
+            let ran = await Task.detached { shortcuts.run(name) }.value
+            if !ran {
+                Notifier.post(title: "Couldn't run \"\(name)\"", body: "Check the shortcut's name in Awake Settings.")
+            }
+        }
+    }
+
+    // MARK: - Power
+
+    private func refreshPower() {
+        let reading = PowerMonitor.read()
+        if reading != power {
+            power = reading
+        }
+        for alert in powerAlerts.observe(reading, warnUnderMinutes: outletWarningMinutes, now: .now) {
+            switch alert {
+            case .findOutlet(let minutes):
+                Notifier.post(title: "Find an outlet", body: "About \(TimeText.format(minutes: minutes)) left.")
+            case .weakCharger(let watts):
+                let charger = watts.map { "This \($0) W charger" } ?? "This charger"
+                Notifier.post(title: "Charger too weak", body: "\(charger) can't keep up, so the battery is still draining.")
+            }
+        }
+    }
+
+    // MARK: - Remote reach
+
+    /// Re-checks Tailscale off the main actor, and with `sharing` the sharing ports too. Each port-22 connect starts
+    /// an sshd session (and a log line), so that runs only at launch, when the panel opens and when the profile
+    /// changes. A request the running check already covers joins it; a sharing request during a Tailscale-only
+    /// check runs once that one ends.
+    private func refreshReach(sharing: Bool) {
+        guard !isRefreshingReach else {
+            if sharing, !reachCheckIncludesSharing { reachRecheck = true }
+            return
+        }
+        isRefreshingReach = true
+        reachCheckIncludesSharing = sharing
+        let cli = tailscaleCLI, check = sharingCheck
+        Task {
+            let (status, services) = await Task.detached { (cli.status(), sharing ? check.servicesOn() : nil) }.value
+            applyReach(status, services)
+            lastReachCheck = .now
+            isRefreshingReach = false
+            if reachRecheck {
+                reachRecheck = false
+                refreshReach(sharing: true)
+            }
+        }
+    }
+
+    /// For `--render-preview` only, which draws once and exits.
+    func refreshReachNow() {
+        applyReach(tailscaleCLI.status(), sharingCheck.servicesOn())
+    }
+
+    /// `services` is nil when the sharing ports weren't checked this time; reach shows once they have been.
+    private func applyReach(_ status: TailscaleStatus?, _ services: [SharingService]?) {
+        if tailscale != status { tailscale = status }
+        guard let services else { return }
+        if sharingOn != services { sharingOn = services }
+        if !reachChecked { reachChecked = true }
+    }
+
+    func performReachAction() {
+        switch reach {
+        case .reachable(let ssh)?, .untilSleep(let ssh)?:
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(ssh, forType: .string)
+        case .remoteLoginOff?:
+            NSWorkspace.shared.open(Self.sharingSettingsURL)
+        case .tailscaleOff?:
+            NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: "/Applications/Tailscale.app"),
+                                               configuration: NSWorkspace.OpenConfiguration())
+        case .tailscaleMissing?, nil:
+            break
+        }
     }
 
     // MARK: - Keep awake
@@ -613,6 +969,7 @@ final class AppModel: ObservableObject {
         do {
             if enabled, !lidMode.isSetUp {
                 try await lidMode.setUp()
+                shieldSoon()
             }
             try lidMode.setEnabled(enabled)
             defaults.set(enabled, forKey: Keys.lidModeSetByAwake)
@@ -633,6 +990,7 @@ final class AppModel: ObservableObject {
     func setUpLidMode() async {
         do {
             try await lidMode.setUp()
+            shieldSoon()
         } catch LidModeError.setUpCancelled {
         } catch {
             Self.showAlert("Couldn't set up Awake's permission", error.localizedDescription)
@@ -718,6 +1076,11 @@ final class AppModel: ObservableObject {
         let result = await probe.check()
         wifi = state
         connectivity = result
+        if !didFirstNetworkCheck {
+            // A shield left up by a crash comes down now if nothing wants it any more.
+            didFirstNetworkCheck = true
+            shieldSoon()
+        }
         switch result {
         case .online:
             joinFailureNotified = false
@@ -815,9 +1178,19 @@ final class AppModel: ObservableObject {
     private func tick() {
         tickCount += 1
         updateDesk()
+        refreshPower()
         guard tickCount % 6 == 0 else { return }
         lidMode.refresh()
         refreshAwakeWatch()
+        if Date.now.timeIntervalSince(lastReachCheck) >= Self.reachInterval {
+            refreshReach(sharing: false)
+        }
+        if shield.isUp {
+            refreshFirewall()
+        }
+        if shield.step(wanted: shieldWanted) != .none {
+            shieldSoon()  // retries a raise or lower that didn't finish
+        }
         checkEndConditions()
         Task { await runGuard() }
     }

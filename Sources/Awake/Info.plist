@@ -42,8 +42,8 @@
 	<key>NSHumanReadableCopyright</key>
 	<string>MIT License. Built on Insomnia © 2018 Karanvir Singh Sangha.</string>
 	<key>NSLocationUsageDescription</key>
-	<string>Awake reads Wi-Fi network names so it can tell when you're on your hotspot. It never uses your location.</string>
+	<string>Awake reads Wi-Fi network names so it can tell your hotspot and trusted networks from public Wi-Fi. It never uses your location.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Awake reads Wi-Fi network names so it can tell when you're on your hotspot. It never uses your location.</string>
+	<string>Awake reads Wi-Fi network names so it can tell your hotspot and trusted networks from public Wi-Fi. It never uses your location.</string>
 </dict>
 </plist>

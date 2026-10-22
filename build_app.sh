@@ -25,6 +25,10 @@ if [[ "${1:-}" == "--install" ]]; then
     while pgrep -x "$APP" >/dev/null; do sleep 0.2; done
     rm -rf "/Applications/$APP.app"
     ditto "$BUNDLE" "/Applications/$APP.app"
-    open "/Applications/$APP.app"
+    # LaunchServices can briefly refuse to relaunch an app that just quit (error -600).
+    for attempt in 1 2 3; do
+        open "/Applications/$APP.app" 2>/dev/null && break
+        sleep 1
+    done
     echo "Installed and launched /Applications/$APP.app"
 fi

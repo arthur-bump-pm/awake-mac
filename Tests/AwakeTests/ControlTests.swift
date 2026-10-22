@@ -28,6 +28,25 @@ final class ControlSocketTests: XCTestCase {
         XCTAssertEqual(response.status?.onTheMove, true)
     }
 
+    func testNewStatusFieldsRoundTripAndOldPayloadsStillDecode() throws {
+        var status = sampleStatus()
+        status.networkProfile = .public
+        status.firewallShield = true
+        status.batteryMinutesLeft = 190
+        status.chargerTooWeak = false
+        status.reachable = true
+        status.reach = "Reachable · Tailscale + SSH"
+        XCTAssertEqual(try JSONDecoder().decode(AwakeStatus.self, from: JSONEncoder().encode(status)), status)
+
+        var old = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(sampleStatus())) as? [String: Any])
+        for key in ["networkProfile", "firewallShield", "batteryMinutesLeft", "chargerWatts", "chargerTooWeak", "reachable", "reach"] {
+            old.removeValue(forKey: key)
+        }
+        let decoded = try JSONDecoder().decode(AwakeStatus.self, from: JSONSerialization.data(withJSONObject: old))
+        XCTAssertNil(decoded.networkProfile)
+        XCTAssertEqual(decoded.summary, "The Mac sleeps normally.")
+    }
+
     func testNothingListeningThrowsConnectError() {
         XCTAssertThrowsError(try ControlClient.send(ControlRequest(.status), path: "/tmp/awake-missing-\(getpid()).sock", timeout: 1)) { error in
             guard case ControlSocketError.system(let call, _) = error else { return XCTFail("\(error)") }
