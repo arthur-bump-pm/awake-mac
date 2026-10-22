@@ -20,8 +20,6 @@ public enum LidModeError: LocalizedError, Equatable {
 @MainActor
 public final class LidModeController: ObservableObject {
     public nonisolated static let sudoersPath = "/etc/sudoers.d/awake"
-    /// The rule this app installed under its earlier name, Outpost; removed when the new one goes in.
-    public nonisolated static let legacySudoersPath = "/etc/sudoers.d/outpost"
 
     /// Bump whenever `allowedCommands` changes, so existing installs are asked to set up again.
     public nonisolated static let ruleVersion = 2
@@ -169,7 +167,6 @@ public final class LidModeController: ObservableObject {
         /usr/sbin/chown root:wheel "$tmp"
         /bin/chmod 0440 "$tmp"
         /bin/mv -f "$tmp" \(sudoersPath)
-        /bin/rm -f \(legacySudoersPath)
         """
     }
 

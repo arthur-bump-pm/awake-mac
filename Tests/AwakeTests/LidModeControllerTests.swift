@@ -22,10 +22,23 @@ final class MockRunner: CommandRunning, @unchecked Sendable {
     }
 }
 
+/// Defaults kept in memory, so test runs leave no preference files behind. Covers the calls
+/// LidModeController makes (`integer` and `set(Int)`); override any new one it starts to use.
+final class TestDefaults: UserDefaults {
+    private var values: [String: Any] = [:]
+
+    init() { super.init(suiteName: "awake-tests")! }
+
+    override func object(forKey defaultName: String) -> Any? { values[defaultName] }
+    override func set(_ value: Any?, forKey defaultName: String) { values[defaultName] = value }
+    override func set(_ value: Int, forKey defaultName: String) { values[defaultName] = value }
+    override func integer(forKey defaultName: String) -> Int { (values[defaultName] as? NSNumber)?.intValue ?? 0 }
+}
+
 @MainActor
 final class LidModeControllerTests: XCTestCase {
     private func defaults(version: Int) -> UserDefaults {
-        let suite = UserDefaults(suiteName: "awake-tests-\(UUID().uuidString)")!
+        let suite = TestDefaults()
         suite.set(version, forKey: "privilegedRuleVersion")
         return suite
     }
@@ -46,7 +59,7 @@ final class LidModeControllerTests: XCTestCase {
 
     func testEnableRunsPmsetThroughSudoWithoutPrompting() async throws {
         let runner = MockRunner()
-        let controller = LidModeController(runner: runner, fileExists: { _ in true })
+        let controller = LidModeController(runner: runner, fileExists: { _ in true }, defaults: TestDefaults())
         try await controller.setEnabled(true)
         XCTAssertTrue(controller.isEnabled)
         XCTAssertTrue(runner.calls.contains(["/usr/bin/sudo", "-n", "/usr/bin/pmset", "-a", "disablesleep", "1"]))
@@ -55,7 +68,7 @@ final class LidModeControllerTests: XCTestCase {
     func testRefusedSudoBeforeSetupAsksForSetup() async {
         let runner = MockRunner()
         runner.sudoAllowed = false
-        let controller = LidModeController(runner: runner, fileExists: { _ in false })
+        let controller = LidModeController(runner: runner, fileExists: { _ in false }, defaults: TestDefaults())
         do {
             try await controller.setEnabled(true)
             XCTFail("expected needsSetUp")
@@ -67,7 +80,7 @@ final class LidModeControllerTests: XCTestCase {
 
     func testBlockingVariantsForQuitting() throws {
         let runner = MockRunner()
-        let controller = LidModeController(runner: runner, fileExists: { _ in true })
+        let controller = LidModeController(runner: runner, fileExists: { _ in true }, defaults: TestDefaults())
         try controller.setEnabledNow(true)
         XCTAssertTrue(controller.isEnabled)
         runner.sleepDisabled = false
@@ -79,7 +92,7 @@ final class LidModeControllerTests: XCTestCase {
 
     func testRefreshPicksUpAChangeMadeElsewhere() async {
         let runner = MockRunner()
-        let controller = LidModeController(runner: runner, fileExists: { _ in true })
+        let controller = LidModeController(runner: runner, fileExists: { _ in true }, defaults: TestDefaults())
         XCTAssertFalse(controller.isEnabled)
         runner.sleepDisabled = true  // set by another tool or by hand
         await controller.refresh()
@@ -126,7 +139,8 @@ final class LidModeControllerTests: XCTestCase {
         XCTAssertLessThan(validate.lowerBound, install.lowerBound)
         XCTAssertTrue(script.hasPrefix("set -e"))
         XCTAssertTrue(script.contains(LidModeController.sudoersPath))
-        XCTAssertTrue(script.hasSuffix("/bin/rm -f /etc/sudoers.d/outpost"), "the old Outpost rule is removed")
+        XCTAssertEqual(script.components(separatedBy: "/etc/sudoers.d/").count, 2, "touches no other sudoers file")
+        XCTAssertTrue(script.hasSuffix("/bin/mv -f \"$tmp\" \(LidModeController.sudoersPath)"))
     }
 
     func testAppleScriptEscapesQuotesAndBackslashes() {
