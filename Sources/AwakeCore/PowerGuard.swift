@@ -21,24 +21,35 @@ public enum ThermalLevel: Int, Comparable, Sendable {
 public struct GuardInput: Equatable, Sendable {
     public var thermal: ThermalLevel
     public var lidClosed: Bool
+    /// An external display is on. With the lid closed that's clamshell mode at a desk, not a laptop in a bag.
+    public var externalDisplay: Bool
+    /// Running from the battery, as macOS reports it.
     public var onBattery: Bool
+    /// Plugged in, but the charger (or power bank) can't keep up, so the battery still drains. macOS reports that
+    /// as AC power.
+    public var chargerTooWeak: Bool
     public var batteryPercent: Int?
     public var keepingAwake: Bool
     public var lidModeOn: Bool
     public var lowPowerOn: Bool
     public var enabled: Bool
 
-    public init(thermal: ThermalLevel, lidClosed: Bool, onBattery: Bool, batteryPercent: Int?,
-                keepingAwake: Bool, lidModeOn: Bool, lowPowerOn: Bool, enabled: Bool) {
+    public init(thermal: ThermalLevel, lidClosed: Bool, externalDisplay: Bool, onBattery: Bool, chargerTooWeak: Bool,
+                batteryPercent: Int?, keepingAwake: Bool, lidModeOn: Bool, lowPowerOn: Bool, enabled: Bool) {
         self.thermal = thermal
         self.lidClosed = lidClosed
+        self.externalDisplay = externalDisplay
         self.onBattery = onBattery
+        self.chargerTooWeak = chargerTooWeak
         self.batteryPercent = batteryPercent
         self.keepingAwake = keepingAwake
         self.lidModeOn = lidModeOn
         self.lowPowerOn = lowPowerOn
         self.enabled = enabled
     }
+
+    /// The battery is running down: on battery, or on a charger too weak to keep up.
+    public var discharging: Bool { onBattery || chargerTooWeak }
 }
 
 public enum GuardReason: Equatable, Sendable {
@@ -49,7 +60,7 @@ public enum GuardReason: Equatable, Sendable {
 public enum GuardAction: Equatable, Sendable {
     case none
     case enableLowPower
-    /// Turn off keep-awake and lid mode, then put the Mac to sleep if the lid is closed.
+    /// Turn off keep-awake and lid mode, then put the Mac to sleep if the lid is closed (see `shouldSleepNow`).
     case stopAndSleep(GuardReason)
 }
 
@@ -60,17 +71,48 @@ public enum HotBagGuard {
     public static func decide(_ input: GuardInput) -> GuardAction {
         guard input.enabled else { return .none }
         guard input.keepingAwake || input.lidModeOn else { return .none }
-        if input.onBattery, let percent = input.batteryPercent, percent <= lowBatteryPercent {
+        if input.discharging, let percent = input.batteryPercent, percent <= lowBatteryPercent {
             return .stopAndSleep(.lowBattery(percent))
         }
-        let closedInBag = input.lidClosed && input.lidModeOn
+        let closedInBag = input.lidClosed && input.lidModeOn && !input.externalDisplay
         if closedInBag, input.thermal >= .serious {
             return .stopAndSleep(.hot)
         }
+        // `pmset -b lowpowermode` only applies on battery power, so a weak charger doesn't count here.
         if closedInBag, input.thermal >= .fair, input.onBattery, !input.lowPowerOn {
             return .enableLowPower
         }
         return .none
+    }
+
+    /// Whether to put the Mac to sleep after stopping: only with the lid closed, and never in clamshell mode at a
+    /// desk (an external display on), where the Mac is in use.
+    public static func shouldSleepNow(lidClosed: Bool, externalDisplay: Bool) -> Bool {
+        lidClosed && !externalDisplay
+    }
+}
+
+/// Lets the guard act once per episode. When a stop can't take (lid-closed mode won't turn off), the guard would
+/// otherwise stop, notify and sleep again every 30 s and on every thermal change. A new episode starts once the guard
+/// has nothing to do.
+public struct GuardEpisode: Sendable {
+    private var stopped = false
+
+    public init() {}
+
+    /// The action to take now: `action`, or `.none` when this episode already stopped.
+    public mutating func filter(_ action: GuardAction) -> GuardAction {
+        switch action {
+        case .none:
+            stopped = false
+            return .none
+        case .enableLowPower:
+            return action
+        case .stopAndSleep:
+            guard !stopped else { return .none }
+            stopped = true
+            return action
+        }
     }
 }
 

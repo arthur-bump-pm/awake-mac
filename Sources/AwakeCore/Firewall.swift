@@ -21,7 +21,8 @@ public final class FirewallController {
 
     private let runner: CommandRunning
 
-    public init(runner: CommandRunning = ProcessCommandRunner()) {
+    /// Each command is stopped after 10 s: `socketfilterfw` can hang, and quitting waits for the one in flight.
+    public init(runner: CommandRunning = ProcessCommandRunner(timeout: 10)) {
         self.runner = runner
     }
 

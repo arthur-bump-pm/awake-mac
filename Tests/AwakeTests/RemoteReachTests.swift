@@ -77,22 +77,31 @@ final class TailscaleCLITests: XCTestCase {
 
     func testNotInstalledRunsNothing() {
         let runner = Runner()
-        XCTAssertNil(TailscaleCLI(runner: runner, isInstalled: { false }).status())
+        XCTAssertNil(TailscaleCLI(runner: runner, locate: { nil }).status())
         XCTAssertTrue(runner.calls.isEmpty)
     }
 
     func testRunsStatusJSON() {
         let runner = Runner()
-        XCTAssertEqual(TailscaleCLI(runner: runner, isInstalled: { true }).status()?.online, true)
-        XCTAssertEqual(runner.calls, [[TailscaleCLI.path, "status", "--json"]])
+        let app = TailscaleCLI.paths[0]
+        XCTAssertEqual(TailscaleCLI(runner: runner, locate: { app }).status()?.online, true)
+        XCTAssertEqual(runner.calls, [[app, "status", "--json"]])
+    }
+
+    func testFindsHomebrewAndStandaloneInstallsToo() {
+        XCTAssertEqual(TailscaleCLI.paths, ["/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+                                            "/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale"])
+        let runner = Runner()
+        XCTAssertEqual(TailscaleCLI(runner: runner, locate: { "/opt/homebrew/bin/tailscale" }).status()?.online, true)
+        XCTAssertEqual(runner.calls, [["/opt/homebrew/bin/tailscale", "status", "--json"]])
     }
 
     func testFailingCLIReadsAsOff() {
         let runner = Runner()
         runner.result = CommandResult(status: 1, output: "Tailscale is stopped.\n")
-        XCTAssertEqual(TailscaleCLI(runner: runner, isInstalled: { true }).status(), .offline)
+        XCTAssertEqual(TailscaleCLI(runner: runner, locate: { TailscaleCLI.paths[0] }).status(), .offline)
         runner.result = CommandResult(status: 0, output: "")
-        XCTAssertEqual(TailscaleCLI(runner: runner, isInstalled: { true }).status(), .offline)
+        XCTAssertEqual(TailscaleCLI(runner: runner, locate: { TailscaleCLI.paths[0] }).status(), .offline)
     }
 }
 

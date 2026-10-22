@@ -8,9 +8,10 @@ enum Theme {
     static let void = Color(hex: 0x0a0a0a)
     static let graphite = Color(hex: 0x161616)
     static let gunmetal = Color(hex: 0x282828)
-    /// Off-state switch tracks, kept at about 3:1 against their surface so the track is always visible.
-    static let trackOff = Color(hex: 0x5a5a5e)
-    static let trackOffOnLight = Color(hex: 0x9a9aa2)
+    /// Off-state switch tracks, at least 3:1 against their surface so the track is always visible: `trackOff` on
+    /// the panel's graphite (3.3:1) and a Settings card (3.1:1), `trackOffOnLight` on the white card (3.4:1).
+    static let trackOff = Color(hex: 0x68686c)
+    static let trackOffOnLight = Color(hex: 0x8a8a92)
     static let bone = Color(hex: 0xededed)
     static let ash = Color(hex: 0xc2c2c2)
     static let smoke = Color(hex: 0xb2b2b2)
@@ -28,7 +29,8 @@ enum Theme {
     static let panelPadding: CGFloat = 12
     /// Corner radius for anything inset by `panelPadding`, so corners stay concentric with the panel.
     static var innerRadius: CGFloat { panelRadius - panelPadding }
-    static let cardRadius: CGFloat = 24
+    /// Settings cards. They sit on the window, not inset in the panel, so they aren't tied to `innerRadius`.
+    static let cardRadius: CGFloat = 18
     static let fieldRadius: CGFloat = 10
 
     static func body(_ size: CGFloat = 13, weight: Font.Weight = .regular) -> Font {
@@ -87,9 +89,11 @@ struct AwakeSwitchStyle: ToggleStyle {
     }
 }
 
-/// Pill chip used for single-choice rows like Keep awake.
+/// Pill chip used for single-choice rows like Keep awake. The selected one is white = on (graphite text).
+/// `spokenTitle` is what VoiceOver reads when the title is abbreviated ("4 hr" → "4 hours").
 struct Chip: View {
     let title: String
+    var spokenTitle: String?
     let selected: Bool
     let action: () -> Void
 
@@ -97,13 +101,15 @@ struct Chip: View {
         Button(action: action) {
             Text(title)
                 .font(Theme.body(12, weight: .medium))
-                .foregroundStyle(selected ? Theme.white : Theme.smoke)
+                .foregroundStyle(selected ? Theme.graphite : Theme.smoke)
                 .padding(.vertical, 5)
                 .padding(.horizontal, 11)
-                .background(Capsule().fill(selected ? Theme.gunmetal : Color.clear))
-                .overlay(Capsule().strokeBorder(selected ? Theme.ash.opacity(0.55) : Theme.hairline))
+                .background(Capsule().fill(selected ? Theme.white : Color.clear))
+                .overlay(Capsule().strokeBorder(selected ? Color.clear : Theme.hairline))
+                .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(spokenTitle ?? title)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 }
@@ -172,11 +178,22 @@ private struct FrostedGlassKey: EnvironmentKey {
     static let defaultValue = true
 }
 
+private struct LiveControlsKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
 extension EnvironmentValues {
     /// Off when rendering previews off-screen, where the live blur can't draw.
     var frostedGlass: Bool {
         get { self[FrostedGlassKey.self] }
         set { self[FrostedGlassKey.self] = newValue }
+    }
+
+    /// Off when rendering previews off-screen, where AppKit-backed controls (text fields, menus) can't draw: they
+    /// show as static stand-ins instead.
+    var liveControls: Bool {
+        get { self[LiveControlsKey.self] }
+        set { self[LiveControlsKey.self] = newValue }
     }
 }
 

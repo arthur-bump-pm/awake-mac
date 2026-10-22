@@ -25,7 +25,7 @@ public final class LidModeController: ObservableObject {
 
     /// Bump whenever `allowedCommands` changes, so existing installs are asked to set up again.
     public nonisolated static let ruleVersion = 2
-    static let ruleVersionKey = "privilegedRuleVersion"
+    public nonisolated static let ruleVersionKey = "privilegedRuleVersion"
 
     public nonisolated static let allowedCommands = [
         "/usr/bin/pmset -a disablesleep 0",
@@ -46,6 +46,11 @@ public final class LidModeController: ObservableObject {
     private let runner: CommandRunning
     private let fileExists: (String) -> Bool
     private let defaults: UserDefaults
+    /// `pmset` runs here, off the main actor and one command at a time, so reads and changes stay in order.
+    private let commands = DispatchQueue(label: "Awake.lidMode")
+    /// Reads are numbered as they're queued; an older one never overwrites a newer one.
+    private var queuedReads = 0
+    private var appliedRead = 0
 
     public init(runner: CommandRunning = ProcessCommandRunner(),
                 fileExists: @escaping (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
@@ -53,21 +58,40 @@ public final class LidModeController: ObservableObject {
         self.runner = runner
         self.fileExists = fileExists
         self.defaults = defaults
-        refresh()
+        refreshNow()
     }
 
-    /// Re-reads the system setting, which `lidawake` or another tool may have changed.
-    public func refresh() {
-        isEnabled = Self.sleepDisabled(inPmsetOutput: runner.run("/usr/bin/pmset", ["-g"]).output)
-        isSetUp = fileExists(Self.sudoersPath) && defaults.integer(forKey: Self.ruleVersionKey) >= Self.ruleVersion
+    /// Re-reads the system setting, which another tool or a person may have changed. `pmset` runs off the main actor.
+    public func refresh() async {
+        await queue { runner in ((), Self.readSleepDisabled(runner)) }
     }
 
-    public func setEnabled(_ enabled: Bool) throws {
-        let result = runner.run("/usr/bin/sudo", ["-n"] + Self.pmsetCommand(enabled))
-        refresh()
-        guard result.status == 0 else {
-            throw isSetUp ? LidModeError.failed(result.output) : LidModeError.needsSetUp
+    /// `refresh()` that blocks on `pmset`: for launch and quit only.
+    public func refreshNow() {
+        queuedReads += 1
+        appliedRead = queuedReads
+        let runner = self.runner
+        apply(sleepDisabled: commands.sync { Self.readSleepDisabled(runner) })
+    }
+
+    /// Switches lid-closed mode through the sudoers rule, off the main actor.
+    public func setEnabled(_ enabled: Bool) async throws {
+        let result = await queue { runner in
+            (runner.run("/usr/bin/sudo", ["-n"] + Self.pmsetCommand(enabled)), Self.readSleepDisabled(runner))
         }
+        try check(result)
+    }
+
+    /// `setEnabled` that blocks on `pmset`: for quitting, which can't wait for the main actor.
+    public func setEnabledNow(_ enabled: Bool) throws {
+        queuedReads += 1
+        appliedRead = queuedReads
+        let runner = self.runner
+        let (result, disabled) = commands.sync {
+            (runner.run("/usr/bin/sudo", ["-n"] + Self.pmsetCommand(enabled)), Self.readSleepDisabled(runner))
+        }
+        apply(sleepDisabled: disabled)
+        try check(result)
     }
 
     /// Shows the macOS admin password prompt and installs the sudoers rule.
@@ -81,10 +105,42 @@ public final class LidModeController: ObservableObject {
         if result.status == 0 {
             defaults.set(Self.ruleVersion, forKey: Self.ruleVersionKey)
         }
-        refresh()
+        await refresh()
         guard result.status == 0 else {
             throw result.output.contains("-128") ? LidModeError.setUpCancelled : LidModeError.failed(result.output)
         }
+    }
+
+    /// Runs `work` on the command queue; the sleep setting it read back is applied unless a newer read already was.
+    private func queue<T: Sendable>(_ work: @escaping @Sendable (CommandRunning) -> (T, Bool)) async -> T {
+        queuedReads += 1
+        let read = queuedReads
+        let runner = self.runner, commands = self.commands
+        let (value, disabled) = await withCheckedContinuation { continuation in
+            commands.async { continuation.resume(returning: work(runner)) }
+        }
+        if read > appliedRead {
+            appliedRead = read
+            apply(sleepDisabled: disabled)
+        }
+        return value
+    }
+
+    private func check(_ result: CommandResult) throws {
+        guard result.status == 0 else {
+            throw isSetUp ? LidModeError.failed(result.output) : LidModeError.needsSetUp
+        }
+    }
+
+    /// Publishes only what changed, so a periodic read doesn't redraw the panel.
+    private func apply(sleepDisabled: Bool) {
+        if isEnabled != sleepDisabled { isEnabled = sleepDisabled }
+        let setUp = fileExists(Self.sudoersPath) && defaults.integer(forKey: Self.ruleVersionKey) >= Self.ruleVersion
+        if isSetUp != setUp { isSetUp = setUp }
+    }
+
+    private nonisolated static func readSleepDisabled(_ runner: CommandRunning) -> Bool {
+        sleepDisabled(inPmsetOutput: runner.run("/usr/bin/pmset", ["-g"]).output)
     }
 
     // MARK: - Pure helpers

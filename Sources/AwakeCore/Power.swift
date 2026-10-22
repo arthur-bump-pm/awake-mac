@@ -184,4 +184,13 @@ public enum TimeText {
     public static func format(minutes: Int) -> String {
         format(TimeInterval(minutes) * 60)
     }
+
+    /// The same, written out for VoiceOver: "45 minutes", "1 hour", "3 hours 10 minutes".
+    public static func spoken(minutes: Int) -> String {
+        let hours = minutes / 60, rest = minutes % 60
+        let hourText = hours == 1 ? "1 hour" : "\(hours) hours"
+        let minuteText = rest == 1 ? "1 minute" : "\(rest) minutes"
+        if hours == 0 { return minuteText }
+        return rest == 0 ? hourText : "\(hourText) \(minuteText)"
+    }
 }

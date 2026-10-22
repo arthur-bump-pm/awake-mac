@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import AwakeCore
 
@@ -43,22 +44,61 @@ final class LidModeControllerTests: XCTestCase {
         XCTAssertFalse(controller.isSetUp)
     }
 
-    func testEnableRunsPmsetThroughSudoWithoutPrompting() throws {
+    func testEnableRunsPmsetThroughSudoWithoutPrompting() async throws {
         let runner = MockRunner()
         let controller = LidModeController(runner: runner, fileExists: { _ in true })
-        try controller.setEnabled(true)
+        try await controller.setEnabled(true)
         XCTAssertTrue(controller.isEnabled)
         XCTAssertTrue(runner.calls.contains(["/usr/bin/sudo", "-n", "/usr/bin/pmset", "-a", "disablesleep", "1"]))
     }
 
-    func testRefusedSudoBeforeSetupAsksForSetup() {
+    func testRefusedSudoBeforeSetupAsksForSetup() async {
         let runner = MockRunner()
         runner.sudoAllowed = false
         let controller = LidModeController(runner: runner, fileExists: { _ in false })
-        XCTAssertThrowsError(try controller.setEnabled(true)) { error in
+        do {
+            try await controller.setEnabled(true)
+            XCTFail("expected needsSetUp")
+        } catch {
             XCTAssertEqual(error as? LidModeError, .needsSetUp)
         }
         XCTAssertFalse(controller.isEnabled)
+    }
+
+    func testBlockingVariantsForQuitting() throws {
+        let runner = MockRunner()
+        let controller = LidModeController(runner: runner, fileExists: { _ in true })
+        try controller.setEnabledNow(true)
+        XCTAssertTrue(controller.isEnabled)
+        runner.sleepDisabled = false
+        controller.refreshNow()
+        XCTAssertFalse(controller.isEnabled)
+        runner.sudoAllowed = false
+        XCTAssertThrowsError(try controller.setEnabledNow(true))
+    }
+
+    func testRefreshPicksUpAChangeMadeElsewhere() async {
+        let runner = MockRunner()
+        let controller = LidModeController(runner: runner, fileExists: { _ in true })
+        XCTAssertFalse(controller.isEnabled)
+        runner.sleepDisabled = true  // set by another tool or by hand
+        await controller.refresh()
+        XCTAssertTrue(controller.isEnabled)
+    }
+
+    func testAnUnchangedReadPublishesNothing() async {
+        let runner = MockRunner()
+        let controller = LidModeController(runner: runner, fileExists: { _ in true },
+                                           defaults: defaults(version: LidModeController.ruleVersion))
+        var changes = 0
+        let watch = controller.objectWillChange.sink { changes += 1 }
+        await controller.refresh()
+        await controller.refresh()
+        XCTAssertEqual(changes, 0, "a periodic read of the same state must not redraw the panel")
+        runner.sleepDisabled = true
+        await controller.refresh()
+        XCTAssertEqual(changes, 1)
+        watch.cancel()
     }
 
     func testParsesPmsetOutput() {

@@ -5,12 +5,15 @@ public enum ControlSocketError: LocalizedError {
     case pathTooLong(String)
     case system(String, Int32)
     case badResponse
+    /// Another copy of Awake answers on the socket.
+    case alreadyRunning
 
     public var errorDescription: String? {
         switch self {
         case .pathTooLong(let path): "Socket path is too long: \(path)"
         case .system(let call, let code): "\(call) failed: \(String(cString: strerror(code)))"
         case .badResponse: "Awake sent an unreadable reply."
+        case .alreadyRunning: "Awake is already running."
         }
     }
 }
@@ -30,10 +33,13 @@ public final class ControlServer: @unchecked Sendable {
         self.handler = handler
     }
 
+    /// Throws `alreadyRunning`, without touching the socket, when another server answers on it: a second copy of
+    /// the app must not take the socket over. A file nobody answers on (left by a crash) is replaced.
     public func start() throws {
         let directory = (path as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
+        if ControlClient.isServerRunning(path: path) { throw ControlSocketError.alreadyRunning }
         unlink(path)
         listener = try SocketIO.makeSocket()
         try SocketIO.withAddress(path) { address, length in
@@ -89,6 +95,15 @@ public final class ControlServer: @unchecked Sendable {
 }
 
 public enum ControlClient {
+    /// Whether a server answers on the socket: connects and hangs up without sending a request.
+    public static func isServerRunning(path: String = ControlPaths.socket) -> Bool {
+        guard let fd = try? SocketIO.makeSocket() else { return false }
+        defer { close(fd) }
+        return (try? SocketIO.withAddress(path) { address, length in
+            guard connect(fd, address, length) == 0 else { throw ControlSocketError.system("connect", errno) }
+        }) != nil
+    }
+
     /// Sends one request to the running app. Throws if nothing is listening.
     public static func send(_ request: ControlRequest, path: String = ControlPaths.socket,
                             timeout: TimeInterval = 180) throws -> ControlResponse {

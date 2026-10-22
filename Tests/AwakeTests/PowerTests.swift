@@ -123,6 +123,10 @@ final class PowerReadingTests: XCTestCase {
         XCTAssertEqual(TimeText.format(minutes: 60), "1 hr")
         XCTAssertEqual(TimeText.format(minutes: 190), "3 hr 10 min")
         XCTAssertEqual(TimeText.format(61), "2 min")
+        XCTAssertEqual(TimeText.spoken(minutes: 15), "15 minutes")
+        XCTAssertEqual(TimeText.spoken(minutes: 60), "1 hour")
+        XCTAssertEqual(TimeText.spoken(minutes: 240), "4 hours")
+        XCTAssertEqual(TimeText.spoken(minutes: 61), "1 hour 1 minute")
     }
 }
 

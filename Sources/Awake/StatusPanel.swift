@@ -1,4 +1,5 @@
 import AppKit
+import AwakeCore
 import Combine
 import SwiftUI
 
@@ -11,6 +12,13 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
     private let model: AppModel
     private var outsideClickMonitor: Any?
     private var changes: AnyCancellable?
+    // The menu bar eyes: the openness on screen, the transition in flight, the timer driving it, the frame shown.
+    private var eyeOpenness: Double = 0
+    private var eyeTransition: EyeTransition?
+    private var eyeTimer: Timer?
+    private var eyeStep: Int?
+    /// The state the menu bar button last told VoiceOver and its tooltip.
+    private var statusShown: String?
 
     init(model: AppModel, openSettings: @escaping () -> Void) {
         self.model = model
@@ -31,7 +39,9 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
             button.action = #selector(toggle)
             button.setAccessibilityLabel("Awake")
         }
-        updateIcon()
+        eyeOpenness = eyesTarget
+        showEyes(eyeOpenness)
+        describeStatus()
         changes = model.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
@@ -46,13 +56,20 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         panel.isVisible ? close() : show()
     }
 
+    /// Opens the panel, or brings it forward if it's already open (a notification tap): never a second click monitor.
     func show() {
+        guard !panel.isVisible else {
+            panel.makeKeyAndOrderFront(nil)
+            return
+        }
         model.panelWillOpen()
         layout()
         panel.makeKeyAndOrderFront(nil)
         statusItem.button?.highlight(true)
-        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            Task { @MainActor in self?.close() }
+        if outsideClickMonitor == nil {
+            outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+                Task { @MainActor in self?.close() }
+            }
         }
     }
 
@@ -69,21 +86,80 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         close()
     }
 
-    /// Sizes the panel to its content and hangs it under the menu bar icon, keeping it on screen.
+    /// Sizes the panel to its content and hangs it under the menu bar icon, keeping it on screen: content taller than
+    /// the room below the menu bar scrolls inside the panel.
     private func layout() {
         guard let button = statusItem.button, let buttonWindow = button.window else { return }
-        let size = hosting.view.fittingSize
         let anchor = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
+        let visible = (buttonWindow.screen ?? NSScreen.main)?.visibleFrame
+        let maxHeight = visible.map { max(240, anchor.minY - 6 - $0.minY - 8) }
+        if hosting.rootView.maxHeight != maxHeight {
+            var root = hosting.rootView
+            root.maxHeight = maxHeight
+            hosting.rootView = root
+        }
+        let size = hosting.view.fittingSize
         var x = anchor.midX - size.width / 2
-        if let visible = (buttonWindow.screen ?? NSScreen.main)?.visibleFrame {
+        if let visible {
             x = min(max(x, visible.minX + 8), visible.maxX - size.width - 8)
         }
         panel.setFrame(NSRect(x: x, y: anchor.minY - size.height - 6, width: size.width, height: size.height), display: true)
     }
 
+    /// Open while anything keeps the Mac awake (On the Move included), closed otherwise.
+    private var eyesTarget: Double {
+        model.onTheMove || model.isKeepingAwake ? 1 : 0
+    }
+
+    /// Tells VoiceOver (the button's value) and the tooltip what Awake is doing, whenever that changes.
+    private func describeStatus() {
+        let status = model.menuBarStatus
+        guard status != statusShown, let button = statusItem.button else { return }
+        statusShown = status
+        button.setAccessibilityValue(status)
+        button.toolTip = status == "Off" ? "Awake is off" : "Awake: \(status)"
+    }
+
+    /// Animates the eyes toward the current state, continuing from wherever they are; Reduce Motion jumps.
     private func updateIcon() {
-        let state: AwakeMark.GlyphState = model.onTheMove ? .moving : model.isKeepingAwake ? .awake : .asleep
-        statusItem.button?.image = MenuBarIcon.image(for: state)
+        describeStatus()
+        let target = eyesTarget
+        guard target != (eyeTransition?.to ?? eyeOpenness) else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        eyeOpenness = eyeTransition?.openness(at: now) ?? eyeOpenness
+        eyeTransition = EyeTransition(from: eyeOpenness, to: target, start: now,
+                                      reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        stepEyes()
+        if eyeTransition != nil, eyeTimer == nil {
+            let timer = Timer(timeInterval: EyeTransition.frameInterval, target: self, selector: #selector(stepEyes),
+                              userInfo: nil, repeats: true)
+            RunLoop.main.add(timer, forMode: .common)
+            eyeTimer = timer
+        }
+    }
+
+    @objc private func stepEyes() {
+        guard let transition = eyeTransition else { return stopEyes() }
+        let now = ProcessInfo.processInfo.systemUptime
+        eyeOpenness = transition.openness(at: now)
+        showEyes(eyeOpenness)
+        if transition.isFinished(at: now) {
+            stopEyes()
+        }
+    }
+
+    private func stopEyes() {
+        eyeTransition = nil
+        eyeTimer?.invalidate()
+        eyeTimer = nil
+    }
+
+    /// Sets the cached frame for this openness, only when it differs from the one shown.
+    private func showEyes(_ openness: Double) {
+        let step = EyeTransition.step(for: openness)
+        guard step != eyeStep else { return }
+        eyeStep = step
+        statusItem.button?.image = MenuBarIcon.image(step: step)
     }
 }
 
@@ -121,6 +197,7 @@ final class SettingsWindowController {
     }
 
     func show() {
+        model.settingsWillOpen()
         if window == nil {
             let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(model: model)))
             window.title = "Awake Settings"

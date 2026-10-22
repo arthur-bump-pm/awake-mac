@@ -22,6 +22,28 @@ public struct ControlRequest: Codable, Sendable, Equatable {
     }
 }
 
+extension ControlRequest {
+    /// Longest timed keep-awake: one week.
+    public static let maxKeepAwakeMinutes = 10_080
+
+    /// Why the app refuses this request, or nil. A switch without "on" is refused rather than read as on: a malformed
+    /// request must never turn anything on. awakectl and the MCP server always send it.
+    public var problem: String? {
+        switch command {
+        case .status, .joinHotspot:
+            return nil
+        case .move, .lidMode, .autoHotspot:
+            return on == nil ? "\"on\" must be true or false." : nil
+        case .keepAwake:
+            guard let on else { return "\"on\" must be true or false." }
+            if on, whileClaudeWorks != true, let minutes, !(1...Self.maxKeepAwakeMinutes).contains(minutes) {
+                return "Minutes must be between 1 and \(Self.maxKeepAwakeMinutes)."
+            }
+            return nil
+        }
+    }
+}
+
 public struct AwakeStatus: Codable, Sendable, Equatable {
     public var onTheMove: Bool
     public var keepAwake: Bool

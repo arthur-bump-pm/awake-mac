@@ -47,10 +47,85 @@ final class ControlSocketTests: XCTestCase {
         XCTAssertEqual(decoded.summary, "The Mac sleeps normally.")
     }
 
+    func testASecondServerDoesNotTakeOverALiveSocket() throws {
+        let path = "/tmp/awake-test-single-\(getpid()).sock"
+        XCTAssertFalse(ControlClient.isServerRunning(path: path))
+        let first = ControlServer(path: path) { _ in ControlResponse(ok: true, notes: ["first"]) }
+        try first.start()
+        defer { first.stop() }
+        XCTAssertTrue(ControlClient.isServerRunning(path: path))
+
+        let second = ControlServer(path: path) { _ in ControlResponse(ok: true, notes: ["second"]) }
+        XCTAssertThrowsError(try second.start()) { error in
+            guard case ControlSocketError.alreadyRunning = error else { return XCTFail("\(error)") }
+        }
+        XCTAssertEqual(try ControlClient.send(ControlRequest(.status), path: path, timeout: 5).notes, ["first"],
+                       "the first copy still answers")
+    }
+
+    func testAStaleSocketFileIsReplaced() throws {
+        let path = "/tmp/awake-test-stale-\(getpid()).sock"
+        unlink(path)
+        // A socket file nobody listens on, as a crash leaves it.
+        let fd = try SocketIO.makeSocket()
+        try SocketIO.withAddress(path) { address, length in XCTAssertEqual(Darwin.bind(fd, address, length), 0) }
+        close(fd)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path))
+        XCTAssertFalse(ControlClient.isServerRunning(path: path))
+
+        let next = ControlServer(path: path) { _ in ControlResponse(ok: true, notes: ["next"]) }
+        try next.start()
+        defer { next.stop() }
+        XCTAssertEqual(try ControlClient.send(ControlRequest(.status), path: path, timeout: 5).notes, ["next"])
+    }
+
+    func testARequestWithoutOnDecodesWithNoValueSoTheAppCanRefuseIt() throws {
+        let request = try JSONDecoder().decode(ControlRequest.self, from: Data(#"{"command":"move"}"#.utf8))
+        XCTAssertNil(request.on)
+        XCTAssertNotNil(request.problem)
+    }
+
     func testNothingListeningThrowsConnectError() {
         XCTAssertThrowsError(try ControlClient.send(ControlRequest(.status), path: "/tmp/awake-missing-\(getpid()).sock", timeout: 1)) { error in
             guard case ControlSocketError.system(let call, _) = error else { return XCTFail("\(error)") }
             XCTAssertEqual(call, "connect")
+        }
+    }
+}
+
+final class ControlRequestTests: XCTestCase {
+    func testSwitchesNeedAnExplicitOn() {
+        for command in [ControlCommand.move, .lidMode, .autoHotspot, .keepAwake] {
+            XCTAssertNotNil(ControlRequest(command).problem, "\(command) without on must be refused, not read as on")
+            XCTAssertNil(ControlRequest(command, on: true).problem)
+            XCTAssertNil(ControlRequest(command, on: false).problem)
+        }
+    }
+
+    func testCommandsWithoutASwitchNeedNothing() {
+        XCTAssertNil(ControlRequest(.status).problem)
+        XCTAssertNil(ControlRequest(.joinHotspot).problem)
+    }
+
+    func testKeepAwakeMinutesMustBeInRange() {
+        XCTAssertNil(ControlRequest(.keepAwake, on: true, minutes: 1).problem)
+        XCTAssertNil(ControlRequest(.keepAwake, on: true, minutes: ControlRequest.maxKeepAwakeMinutes).problem)
+        XCTAssertNotNil(ControlRequest(.keepAwake, on: true, minutes: 0).problem)
+        XCTAssertNotNil(ControlRequest(.keepAwake, on: true, minutes: ControlRequest.maxKeepAwakeMinutes + 1).problem)
+        XCTAssertNil(ControlRequest(.keepAwake, on: false, minutes: 0).problem, "off ignores minutes")
+    }
+
+    func testEveryAwakectlRequestIsAccepted() {
+        // What awakectl sends for each of its commands.
+        let requests = [
+            ControlRequest(.status), ControlRequest(.move, on: true), ControlRequest(.move, on: false),
+            ControlRequest(.keepAwake, on: true, whileClaudeWorks: true), ControlRequest(.keepAwake, on: true),
+            ControlRequest(.keepAwake, on: false), ControlRequest(.keepAwake, on: true, minutes: 90),
+            ControlRequest(.lidMode, on: true), ControlRequest(.lidMode, on: false), ControlRequest(.joinHotspot),
+            ControlRequest(.autoHotspot, on: true), ControlRequest(.autoHotspot, on: false),
+        ]
+        for request in requests {
+            XCTAssertNil(request.problem, "\(request)")
         }
     }
 }
@@ -134,6 +209,38 @@ final class MCPHandlerTests: XCTestCase {
         XCTAssertEqual(sent, [ControlRequest(.move, on: false)])
     }
 
+    func testKeepAwakeNeedsAKnownMode() throws {
+        for arguments: [String: Any] in [[:], ["mode": "forever"], ["mode": 1]] {
+            let reply = try XCTUnwrap(handler().reply(to: [
+                "jsonrpc": "2.0", "id": 11, "method": "tools/call",
+                "params": ["name": "awake_keep_awake", "arguments": arguments],
+            ]))
+            XCTAssertEqual((reply["result"] as? [String: Any])?["isError"] as? Bool, true, "\(arguments)")
+        }
+        XCTAssertTrue(sent.isEmpty, "a missing or unknown mode must not keep the Mac awake")
+
+        _ = handler().reply(to: ["jsonrpc": "2.0", "id": 12, "method": "tools/call",
+                                 "params": ["name": "awake_keep_awake", "arguments": ["mode": "indefinitely"]]])
+        _ = handler().reply(to: ["jsonrpc": "2.0", "id": 13, "method": "tools/call",
+                                 "params": ["name": "awake_keep_awake", "arguments": ["mode": "while_claude_works"]]])
+        _ = handler().reply(to: ["jsonrpc": "2.0", "id": 14, "method": "tools/call",
+                                 "params": ["name": "awake_keep_awake", "arguments": ["mode": "off"]]])
+        XCTAssertEqual(sent, [ControlRequest(.keepAwake, on: true),
+                              ControlRequest(.keepAwake, on: true, whileClaudeWorks: true),
+                              ControlRequest(.keepAwake, on: false)])
+        XCTAssertTrue(sent.allSatisfy { $0.problem == nil }, "the app accepts everything the MCP server sends")
+    }
+
+    func testMissingOnIsRejectedForEverySwitch() throws {
+        for name in ["awake_on_the_move", "awake_lid_closed_mode", "awake_auto_hotspot"] {
+            let reply = try XCTUnwrap(handler().reply(to: [
+                "jsonrpc": "2.0", "id": 15, "method": "tools/call", "params": ["name": name, "arguments": [:]],
+            ]))
+            XCTAssertEqual((reply["result"] as? [String: Any])?["isError"] as? Bool, true, name)
+        }
+        XCTAssertTrue(sent.isEmpty)
+    }
+
     func testHugeMinutesAreRejected() throws {
         let reply = try XCTUnwrap(handler().reply(to: [
             "jsonrpc": "2.0", "id": 10, "method": "tools/call",
@@ -151,6 +258,40 @@ final class MCPHandlerTests: XCTestCase {
         let result = try XCTUnwrap(reply["result"] as? [String: Any])
         XCTAssertEqual(result["isError"] as? Bool, true)
         XCTAssertTrue(((result["content"] as? [[String: Any]])?.first?["text"] as? String ?? "").hasPrefix("nope"))
+    }
+
+    func testALineThatIsNotJSONGetsAParseErrorWithIdNull() throws {
+        let replies = handler().replies(toLine: "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": ")
+        XCTAssertEqual(replies.count, 1)
+        let reply = try XCTUnwrap(replies.first)
+        XCTAssertEqual((reply["error"] as? [String: Any])?["code"] as? Int, -32700)
+        XCTAssertTrue(reply["id"] is NSNull)
+        let wire = String(decoding: try JSONSerialization.data(withJSONObject: reply), as: UTF8.self)
+        XCTAssertTrue(wire.contains("\"id\":null"), wire)
+        XCTAssertTrue(sent.isEmpty)
+    }
+
+    func testLinesThatAreNotMessagesAreRefusedAndBlankLinesIgnored() throws {
+        XCTAssertTrue(handler().replies(toLine: "   ").isEmpty)
+        let reply = try XCTUnwrap(handler().replies(toLine: "42").first)
+        XCTAssertEqual((reply["error"] as? [String: Any])?["code"] as? Int, -32600)
+        XCTAssertTrue(reply["id"] is NSNull)
+    }
+
+    func testAValidLineAndABatchStillGetReplies() throws {
+        let one = handler().replies(toLine: #"{"jsonrpc":"2.0","id":1,"method":"ping"}"#)
+        XCTAssertEqual(one.first?["id"] as? Int, 1)
+        let batch = handler().replies(toLine: #"[{"jsonrpc":"2.0","id":2,"method":"ping"},{"jsonrpc":"2.0","method":"notifications/initialized"}]"#)
+        XCTAssertEqual(batch.count, 1, "the notification gets no reply")
+        XCTAssertEqual(batch.first?["id"] as? Int, 2)
+    }
+
+    func testOnTheMoveToolSaysWhatElseItChangesAndThatItEnds() throws {
+        let move = try XCTUnwrap(MCPHandler.tools.first { $0["name"] as? String == "awake_on_the_move" })
+        let description = move["description"] as? String ?? ""
+        for phrase in ["firewall", "Low Power Mode", "ends by itself"] {
+            XCTAssertTrue(description.contains(phrase), phrase)
+        }
     }
 
     func testUnknownMethodIsAnError() throws {

@@ -22,6 +22,12 @@ enum KeepAwakeOption: Hashable, Identifiable {
         case .whileClaudeWorks: "While Claude works"
         }
     }
+
+    /// For VoiceOver: "4 hours", not "4 hr".
+    var spokenTitle: String {
+        if case .minutes(let m) = self { return TimeText.spoken(minutes: m) }
+        return title
+    }
 }
 
 /// When On the Move switches itself off.
@@ -59,6 +65,8 @@ struct PanelAlert: Identifiable, Equatable {
         case backAtDesk
         case sharing
         case locationAccess
+        /// The last lid-closed mode, permission or On the Move action from the panel failed.
+        case actionFailed
     }
 
     let kind: Kind
@@ -75,12 +83,14 @@ final class AppModel: ObservableObject {
     /// How long every Claude session must stay idle before "Claude finished" counts.
     static let claudeIdleGrace: TimeInterval = 5 * 60
     static let moveTimeLimit: TimeInterval = 4 * 3600
-    /// Longest timed keep-awake accepted from the CLI or MCP: one week.
-    static let maxKeepAwakeMinutes = 10_080
-
     let keepAwake: KeepAwakeController
-    let lidMode = LidModeController()
-    let location = LocationAccess()
+    let lidMode: LidModeController
+    let location: LocationAccess
+    /// Made by `--render-preview` from a fixed sample: it never reads or changes the user's settings or the system.
+    let isPreview: Bool
+    /// The app bundle, for the Claude Code command in Settings.
+    let appPath: String
+    private let userName: String
 
     @Published private(set) var wifi = WiFiState(isPoweredOn: true, ssid: nil) {
         didSet { updateProfile() }
@@ -108,12 +118,23 @@ final class AppModel: ObservableObject {
     @Published private(set) var keepAwakeWhileClaudeWorks = false
     @Published private(set) var atDesk = false
     @Published private(set) var deskNudge: DeskEvent?
+    /// The hotspot password as last read from or saved to the keychain; nil until a read succeeds. Automatic work
+    /// (failover) uses only this: the app is ad-hoc signed, so its signature changes with every install and a keychain
+    /// read can wait on an "allow" prompt nobody answers (lid closed). The keychain is read off the main actor, at
+    /// launch and when Settings opens.
+    @Published private(set) var savedHotspotPassword: String?
+    /// Why the last lid-closed mode, permission or On the Move action from the panel didn't fully work, until it's
+    /// dismissed or a later one works. Shown in the panel too, since notifications may be off.
+    @Published private(set) var lastFailure: String?
 
     @Published private(set) var onTheMove: Bool {
         didSet { defaults.set(onTheMove, forKey: Keys.onTheMove) }
     }
     @Published var autoHotspot: Bool {
         didSet {
+            // Assigning the same value (ending a move, a repeated request) must not reset the engine and lose the
+            // Wi-Fi to return to.
+            guard autoHotspot != oldValue else { return }
             defaults.set(autoHotspot, forKey: Keys.autoHotspot)
             engine.reset()
             checkSoon()
@@ -259,16 +280,42 @@ final class AppModel: ObservableObject {
     private var isChecking = false
     private var joinFailureNotified = false
     private var portalNotified = false
-    private var cachedPassword: String?
+    /// Keychain reads and writes run here, in order, never on the main actor.
+    private let keychainQueue = DispatchQueue(label: "Awake.keychain")
+    /// Counts password saves, so a read that started before one doesn't overwrite what the user just typed.
+    private var passwordSaves = 0
+    /// The guard runs one at a time (tick and thermal changes both start it) and acts once per episode.
+    private var isGuarding = false
+    private var guardEpisode = GuardEpisode()
     private var claudeWasWorking = false
     private var claudeIdleSince: Date?
     private var lowPowerOnBattery: Bool?
     /// On the Move switches one transition at a time, so a start and an end can't interleave across awaits.
     private var moveTransition: Task<[String], Never>?
+    private var previewLaunchAtLogin = false
     private var cancellables = Set<AnyCancellable>()
 
-    private init(defaults: UserDefaults = .standard) {
+    /// The live app, or with `preview` the sample `--render-preview` draws: then `defaults` is in memory, and lid-closed
+    /// mode, Location, keep-awake and power come from the sample instead of the system.
+    private init(defaults: UserDefaults = .standard, preview: PreviewSample? = nil) {
         self.defaults = defaults
+        isPreview = preview != nil
+        if let preview {
+            lidMode = LidModeController(runner: PreviewCommands(lidClosedMode: preview.lidClosedMode),
+                                        fileExists: { _ in preview.adminPermission }, defaults: defaults)
+            location = LocationAccess(fixed: preview.locationAllowed ? .authorizedAlways : .notDetermined)
+            keepAwake = KeepAwakeController(assertionManager: PreviewAssertions())
+            power = preview.power
+            appPath = PreviewSample.appPath
+            userName = PreviewSample.userName
+        } else {
+            lidMode = LidModeController()
+            location = LocationAccess()
+            keepAwake = KeepAwakeController(allowDisplaySleep: defaults.bool(forKey: Keys.allowDisplaySleep))
+            power = PowerMonitor.read()
+            appPath = Bundle.main.bundlePath
+            userName = NSUserName()
+        }
         defaults.register(defaults: [Keys.returnToWiFi: true, Keys.safety: true, Keys.moveLowPower: true,
                                      Keys.moveShield: true, Keys.deskSuggestions: true, Keys.publicShield: true,
                                      Keys.outletWarningMinutes: PowerAlerts.defaultWarning])
@@ -290,8 +337,6 @@ final class AppModel: ObservableObject {
         outletWarningMinutes = PowerAlerts.warningChoices.contains(warning) ? warning : PowerAlerts.defaultWarning
         shield = defaults.data(forKey: Keys.firewallShield)
             .flatMap { try? JSONDecoder().decode(FirewallShield.self, from: $0) } ?? FirewallShield()
-        power = PowerMonitor.read()
-        keepAwake = KeepAwakeController(allowDisplaySleep: defaults.bool(forKey: Keys.allowDisplaySleep))
 
         Publishers.Merge3(keepAwake.objectWillChange, lidMode.objectWillChange, location.objectWillChange)
             .sink { [weak self] _ in self?.objectWillChange.send() }
@@ -299,6 +344,19 @@ final class AppModel: ObservableObject {
     }
 
     func start() {
+        precondition(!isPreview, "a preview model never starts")
+        // First, before changing anything: a second copy must neither take the socket over nor touch any setting.
+        let server = ControlServer { request in await AppModel.shared.handle(request) }
+        do {
+            try server.start()
+            controlServer = server
+        } catch ControlSocketError.alreadyRunning {
+            NSLog("Awake: another copy is already running; quitting this one.")
+            exit(0)
+        } catch {
+            NSLog("Awake: control socket unavailable: \(error.localizedDescription)")
+        }
+
         Notifier.setUp()
         adoptLegacyFirewallSnapshot()
         if !defaults.bool(forKey: Keys.didRegisterLoginItem) {
@@ -306,17 +364,15 @@ final class AppModel: ObservableObject {
             launchAtLogin = true
         }
         if onTheMove {
-            // Keep-awake assertions end with the process; bring it back after a relaunch.
+            // Keep-awake assertions end with the process; bring it back after a relaunch, then finish starting On the
+            // Move in case a crash cut the start short.
             keepAwake.activate()
+            resumeMove()
+        } else if loadSnapshot() != nil {
+            // A snapshot without On the Move: a crash cut an end short before it put everything back.
+            finishInterruptedMoveEnd()
         }
-
-        let server = ControlServer { request in await AppModel.shared.handle(request) }
-        do {
-            try server.start()
-            controlServer = server
-        } catch {
-            NSLog("Awake: control socket unavailable: \(error.localizedDescription)")
-        }
+        Task { await loadHotspotPassword() }
 
         pathMonitor.pathUpdateHandler = { [weak self] _ in
             Task { @MainActor in self?.checkSoon() }
@@ -335,18 +391,25 @@ final class AppModel: ObservableObject {
         refreshPower()
         refreshReach(sharing: true)
         refreshFirewall()
-        tickTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        // Common modes, so the tick keeps running while a menu or a control is tracking the mouse.
+        let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        tickTimer = timer
         NotificationCenter.default.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification,
                                                object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in await self?.runGuard() }
         }
     }
 
-    /// Puts back what Awake changed. Runs synchronously: the app is about to exit.
+    /// Puts back what Awake changed. Runs synchronously: the app is about to exit. Lid-closed mode and Low Power Mode
+    /// go first, so a slow firewall command can't hold them up. A "set by Awake" flag is cleared only once its setting
+    /// is really off, so a failure can still be undone later.
     func shutdown() {
         controlServer?.stop()
+        isQuitting = true
+        lidMode.refreshNow()
         if onTheMove {
             let snapshot = loadSnapshot()
             Self.restorePrivileged(snapshot, lowPower: lowPower)
@@ -354,21 +417,18 @@ final class AppModel: ObservableObject {
             onTheMove = false
             autoHotspot = snapshot?.autoHotspot ?? autoHotspot
         }
-        // Waits for a shield command in flight (a raise could otherwise finish after the restore and leave the
-        // firewall on with no snapshot), restores, and stops any shield step still queued.
-        isQuitting = true
-        let shield = self.shield, firewall = self.firewall
-        if firewallQueue.close(then: { shield.isUp && Self.restoreFirewall(shield, firewall: firewall) }) {
-            self.shield.didLower()
-        }
-        if defaults.bool(forKey: Keys.lowPowerSetByGuard) {
-            try? lowPower.setForBattery(false)
+        if defaults.bool(forKey: Keys.lowPowerSetByGuard), (try? lowPower.setForBattery(false)) != nil {
             defaults.set(false, forKey: Keys.lowPowerSetByGuard)
         }
         keepAwake.deactivate()
-        if lidMode.isEnabled, defaults.bool(forKey: Keys.lidModeSetByAwake) {
-            try? lidMode.setEnabled(false)
+        if defaults.bool(forKey: Keys.lidModeSetByAwake), !lidMode.isEnabled || (try? lidMode.setEnabledNow(false)) != nil {
             defaults.set(false, forKey: Keys.lidModeSetByAwake)
+        }
+        // Waits for a shield command in flight (a raise could otherwise finish after the restore and leave the
+        // firewall on with no snapshot), restores, and stops any shield step still queued.
+        let shield = self.shield, firewall = self.firewall
+        if firewallQueue.close(then: { shield.isUp && Self.restoreFirewall(shield, firewall: firewall) }) {
+            self.shield.didLower()
         }
     }
 
@@ -379,7 +439,7 @@ final class AppModel: ObservableObject {
 
     /// Called when the panel opens, so it shows fresh state.
     func panelWillOpen() {
-        lidMode.refresh()
+        Task { await lidMode.refresh() }
         refreshAwakeWatch()
         refreshPower()
         refreshReach(sharing: true)
@@ -392,6 +452,26 @@ final class AppModel: ObservableObject {
     var online: Bool? { connectivity.map { $0 == .online } }
 
     var isKeepingAwake: Bool { keepAwake.isActive || lidMode.isEnabled }
+
+    /// Awake itself keeps the Mac awake (On the Move, keep-awake or lid-closed mode); the menu bar eyes are open.
+    var isAwakeOn: Bool { onTheMove || isKeepingAwake }
+
+    /// The menu bar item's state, for VoiceOver and its tooltip.
+    var menuBarStatus: String {
+        if onTheMove { return "On the Move" }
+        if lidMode.isEnabled { return "Keeping your Mac awake, lid closed too" }
+        if keepAwake.isActive {
+            return keepAwakeWhileClaudeWorks ? "Keeping your Mac awake while Claude works" : "Keeping your Mac awake"
+        }
+        return "Off"
+    }
+
+    /// Other apps holding the Mac awake: "Also …" while Awake keeps it awake too, plain otherwise.
+    var otherAwakeAppsLine: String? {
+        guard !otherAwakeApps.isEmpty else { return nil }
+        let names = otherAwakeApps.joined(separator: ", ")
+        return isAwakeOn ? "Also keeping it awake: \(names)" : "Keeping it awake: \(names)"
+    }
 
     var isOnHotspot: Bool { !hotspotSSID.isEmpty && wifi.ssid == hotspotSSID }
 
@@ -421,14 +501,27 @@ final class AppModel: ObservableObject {
         if keepAwake.isActive {
             return keepAwake.remainingTime.map { "Awake for \(Self.format($0))" } ?? "Keeping your Mac awake"
         }
-        return "Sleeps normally"
+        return "Awake is off"
     }
 
     /// The shield is up and the firewall, as last read, really is shielded (the user can switch it off behind it).
     var isShielded: Bool { shield.isOn(firewall: firewallNow) }
 
-    /// The public Wi-Fi shield is on, but without Location access every network reads as unknown, so it never engages.
-    var shieldNeedsLocation: Bool { publicShield && !location.isAuthorized }
+    /// Features that are on but can't work without Location access: macOS hides Wi-Fi names, so the shield can't tell
+    /// public from trusted Wi-Fi and auto-hotspot can't find the hotspot.
+    var featuresNeedingLocation: [String] {
+        guard !location.isAuthorized else { return [] }
+        return (publicShield ? ["the public Wi-Fi shield"] : []) + (autoHotspot ? ["auto-hotspot"] : [])
+    }
+
+    /// "The public Wi-Fi shield and auto-hotspot need Location access", or nil when nothing does.
+    private var locationProblem: String? {
+        let features = featuresNeedingLocation
+        guard let first = features.first else { return nil }
+        let subject = features.count == 1 ? first : features.joined(separator: " and ")
+        let capitalized = subject.prefix(1).uppercased() + subject.dropFirst()
+        return "\(capitalized) \(features.count == 1 ? "needs" : "need") Location access"
+    }
 
     /// The panel's network line: "Public network · shielded", "Home network", or nil when there's nothing to say.
     var profileStatus: String? {
@@ -456,7 +549,12 @@ final class AppModel: ObservableObject {
     var reach: RemoteReach? {
         guard reachChecked else { return nil }
         return RemoteReach.evaluate(tailscale: tailscale, remoteLogin: sharingOn.contains(.remoteLogin),
-                                    lidClosedMode: lidMode.isEnabled, user: NSUserName())
+                                    lidClosedMode: lidMode.isEnabled, user: userName)
+    }
+
+    /// Tailscale's app is there to open (a Homebrew install has only the CLI).
+    var canOpenTailscale: Bool {
+        isPreview || FileManager.default.fileExists(atPath: TailscaleCLI.appPath)
     }
 
     var alerts: [PanelAlert] {
@@ -469,9 +567,12 @@ final class AppModel: ObservableObject {
                                      message: "Sharing on this network: \(sharingOn.map(\.title).joined(separator: ", "))",
                                      action: "Open Settings"))
         }
-        if shieldNeedsLocation {
-            alerts.append(PanelAlert(kind: .locationAccess, message: "The public Wi-Fi shield needs Location access.",
-                                     action: "Allow"))
+        if let locationProblem {
+            alerts.append(PanelAlert(kind: .locationAccess, message: locationProblem + ".",
+                                     action: location.isDenied ? "Open Settings" : "Allow"))
+        }
+        if let lastFailure {
+            alerts.append(PanelAlert(kind: .actionFailed, message: lastFailure, action: "OK"))
         }
         if lidMode.isEnabled, !defaults.bool(forKey: Keys.lidModeSetByAwake) {
             alerts.append(PanelAlert(kind: .foreignLidMode, message: "Lid-closed mode was turned on outside Awake.", action: "Turn Off"))
@@ -503,6 +604,8 @@ final class AppModel: ObservableObject {
             NSWorkspace.shared.open(Self.sharingSettingsURL)
         case .locationAccess:
             location.request()
+        case .actionFailed:
+            lastFailure = nil
         }
     }
 
@@ -525,27 +628,29 @@ final class AppModel: ObservableObject {
             sentences.append(keepAwake.remainingTime.map { "The Mac stays awake for \(Self.format($0)) (lid open)." }
                              ?? "The Mac stays awake while the lid is open.")
         } else {
-            sentences.append("The Mac sleeps normally.")
+            sentences.append("Awake is off.")
         }
         if claudeWorking > 0 {
             sentences.append(claudeWorking == 1 ? "1 Claude session is working." : "\(claudeWorking) Claude sessions are working.")
         }
         if autoHotspot {
-            sentences.append(hotspotSetupProblem.map { "Auto-hotspot is on, but it can't work yet. \($0)" }
-                             ?? "Auto-hotspot is on (\(hotspotSSID)).")
+            // Location is one sentence below, for every feature that needs it.
+            sentences.append(hotspotSSID.isEmpty ? "Auto-hotspot is on, but no hotspot is chosen yet: pick one in Awake Settings."
+                                                 : "Auto-hotspot is on (\(hotspotSSID)).")
         }
         sentences.append(networkStatus + ".")
         if let profileSentence {
             sentences.append(profileSentence)
         }
-        if shieldNeedsLocation {
-            sentences.append("The public Wi-Fi shield can't tell public from trusted Wi-Fi without Location access: allow it in Awake Settings.")
+        if let locationProblem {
+            sentences.append("\(locationProblem) to see Wi-Fi names: allow it in Awake Settings.")
         }
         if profile == .public, !sharingOn.isEmpty {
             sentences.append("Sharing is on: \(sharingOn.map(\.title).joined(separator: ", ")).")
         }
         if !otherAwakeApps.isEmpty {
-            sentences.append("Also keeping it awake: \(otherAwakeApps.joined(separator: ", ")).")
+            let names = otherAwakeApps.joined(separator: ", ")
+            sentences.append(isAwakeOn ? "Also keeping the Mac awake: \(names)." : "Keeping the Mac awake: \(names).")
         }
         if let battery = power.sentence {
             sentences.append(battery)
@@ -570,37 +675,40 @@ final class AppModel: ObservableObject {
 
     // MARK: - Control (awakectl / MCP)
 
+    /// A malformed request (a switch without "on") is refused, never read as "on". A move or keep-awake started here
+    /// came from Claude (MCP, or awakectl in its shell), so it counts as Claude having worked for the end conditions.
     func handle(_ request: ControlRequest) async -> ControlResponse {
+        if let problem = request.problem {
+            return ControlResponse(ok: false, error: problem, status: status())
+        }
         var notes: [String] = []
         var failure: String?
         switch request.command {
         case .status:
             break
         case .move:
-            notes = await setOnTheMove(request.on ?? true)
+            notes = await setOnTheMove(request.on == true)
+            if request.on == true { claudeHasWorked() }
         case .keepAwake:
             if request.on == false {
                 keepAwakeOption = .off
             } else if request.whileClaudeWorks == true {
                 keepAwakeOption = .whileClaudeWorks
             } else if let minutes = request.minutes {
-                guard (1...Self.maxKeepAwakeMinutes).contains(minutes) else {
-                    failure = "Minutes must be between 1 and \(Self.maxKeepAwakeMinutes)."
-                    break
-                }
                 keepAwakeOption = .minutes(minutes)
             } else {
                 keepAwakeOption = .indefinitely
             }
+            if request.on == true { claudeHasWorked() }
         case .lidMode:
-            failure = await lidModeProblem(request.on ?? true)
+            failure = await lidModeProblem(request.on == true)
         case .autoHotspot:
-            autoHotspot = request.on ?? true
+            autoHotspot = request.on == true
             if autoHotspot, let problem = hotspotSetupProblem {
                 notes.append(problem)
             }
         case .joinHotspot:
-            failure = hotspotSSID.isEmpty ? "No hotspot is chosen yet (Awake Settings)." : await joinHotspotNow()
+            failure = hotspotSSID.isEmpty ? "No hotspot is chosen yet: pick one in Awake Settings." : await joinHotspotNow()
         }
         return ControlResponse(ok: failure == nil, error: failure, notes: notes.isEmpty ? nil : notes, status: status())
     }
@@ -611,25 +719,52 @@ final class AppModel: ObservableObject {
     /// the firewall shield) or restores what was there before. Returns notes about anything that couldn't switch.
     @discardableResult
     func setOnTheMove(_ on: Bool) async -> [String] {
+        await moveStep { on ? await self.startMove() : await self.endMove() }
+    }
+
+    /// Runs one On the Move transition after the ones before it.
+    private func moveStep(_ work: @escaping @MainActor () async -> [String]) async -> [String] {
         let previous = moveTransition
         let transition = Task { @MainActor in
             _ = await previous?.value
-            return on ? await self.startMove() : await self.endMove()
+            return await work()
         }
         moveTransition = transition
         return await transition.value
     }
 
+    /// After a relaunch with On the Move on (a crash or force quit can come partway through starting it), finishes
+    /// starting it; starting is idempotent. Never asks for the admin password here: nobody may be there to answer.
+    private func resumeMove() {
+        Task { await moveStep { await self.startMove(allowSetUp: false) } }
+    }
+
+    /// Ending keeps the snapshot until lid-closed mode and Low Power Mode are back, so a crash in between leaves it
+    /// for the next launch to finish.
+    private func finishInterruptedMoveEnd() {
+        Task {
+            await moveStep {
+                guard !self.onTheMove, let snapshot = self.loadSnapshot() else { return [] }
+                return await self.putBackAfterMove(snapshot)
+            }
+        }
+    }
+
     func setOnTheMoveFromMenu(_ on: Bool) async {
         let notes = await setOnTheMove(on)
+        // Hotspot setup already shows in the panel (the auto-hotspot row, the Location alert), so it isn't a failure.
+        let failures = notes.filter { $0 != hotspotSetupProblem }
+        lastFailure = failures.isEmpty ? nil : failures.joined(separator: " ")
         if !notes.isEmpty {
             Notifier.post(title: on ? "On the Move is on" : "Back at your desk", body: notes.joined(separator: " "))
         }
     }
 
-    private func startMove() async -> [String] {
+    private func startMove(allowSetUp: Bool = true) async -> [String] {
         var notes: [String] = []
         let starting = !onTheMove
+        // Lid-closed mode as it is now (another tool or a person may have changed it), for the snapshot and the switch.
+        await lidMode.refresh()
         // Snapshot before changing anything, so an interruption can always be undone.
         var snapshot = (starting ? nil : loadSnapshot())
             ?? MoveSnapshot(keepAwake: currentKeepAwake, lidMode: lidMode.isEnabled, autoHotspot: autoHotspot)
@@ -637,11 +772,12 @@ final class AppModel: ObservableObject {
         if starting {
             onTheMove = true
             defaults.set(Date.now, forKey: Keys.moveStartedAt)
+            refreshAwakeWatch()
             claudeWasWorking = claudeWorking > 0
             claudeIdleSince = nil
             deskNudge = nil
         }
-        keepAwakeWhileClaudeWorks = false
+        if keepAwakeWhileClaudeWorks { keepAwakeWhileClaudeWorks = false }
         keepAwake.activate()
         if !autoHotspot {
             autoHotspot = true
@@ -649,26 +785,39 @@ final class AppModel: ObservableObject {
         if let problem = hotspotSetupProblem {
             notes.append(problem)
         }
-        if !lidMode.isEnabled, let problem = await lidModeProblem(true) {
-            notes.append("Lid-closed mode is off (\(problem)), so closing the lid will still put the Mac to sleep.")
+        if !lidMode.isEnabled, allowSetUp || lidMode.isSetUp, let problem = await lidModeProblem(true) {
+            notes.append("Lid-closed mode stayed off, so closing the lid will still put the Mac to sleep. \(problem)")
         }
 
-        if lidMode.isSetUp, moveLowPower {
-            let lowPower = self.lowPower
-            let changes = await Task.detached { () -> (Bool?, [String]) in
-                guard let current = lowPower.isOnForBattery(), !current else { return (nil, []) }
-                do {
-                    try lowPower.setForBattery(true)
-                    return (current, [])
-                } catch {
-                    return (nil, ["Low Power Mode didn't switch on."])
-                }
-            }.value
-            if snapshot.lowPowerOnBattery == nil { snapshot.lowPowerOnBattery = changes.0 }
-            notes += changes.1
-            saveSnapshot(snapshot)
+        if moveLowPower {
+            if lidMode.isSetUp {
+                notes += await switchOnLowPower(recordingIn: &snapshot)
+            } else {
+                notes.append("Low Power Mode stayed off: set up Awake's permission in Awake Settings first.")
+            }
         }
         return notes + (await updateShield())
+    }
+
+    /// Turns Low Power Mode on for battery if it's off. What it was is saved in the snapshot before `pmset` runs, so a
+    /// crash right after the change can still be undone.
+    private func switchOnLowPower(recordingIn snapshot: inout MoveSnapshot) async -> [String] {
+        let lowPower = self.lowPower
+        guard let current = await Task.detached(operation: { lowPower.isOnForBattery() }).value, !current else {
+            return []
+        }
+        let recorded = snapshot.lowPowerOnBattery == nil
+        if recorded {
+            snapshot.lowPowerOnBattery = current
+            saveSnapshot(snapshot)
+        }
+        let switched = await Task.detached { (try? lowPower.setForBattery(true)) != nil }.value
+        guard !switched else { return [] }
+        if recorded {
+            snapshot.lowPowerOnBattery = nil
+            saveSnapshot(snapshot)
+        }
+        return ["Couldn't turn on Low Power Mode."]
     }
 
     private var currentKeepAwake: MoveSnapshot.KeepAwake {
@@ -694,25 +843,33 @@ final class AppModel: ObservableObject {
 
     private func endMove() async -> [String] {
         guard onTheMove else { return [] }
-        var notes: [String] = []
         let snapshot = loadSnapshot()
         onTheMove = false
-        defaults.removeObject(forKey: Keys.moveSnapshot)
         defaults.removeObject(forKey: Keys.moveStartedAt)
         restoreKeepAwake(snapshot?.keepAwake)
         autoHotspot = snapshot?.autoHotspot ?? false
+        return await putBackAfterMove(snapshot)
+    }
+
+    /// The part of ending On the Move that outlives the process: lid-closed mode, Low Power Mode and the shield. The
+    /// snapshot is dropped only after these, so a crash midway leaves it for the next launch (`start()`).
+    private func putBackAfterMove(_ snapshot: MoveSnapshot?) async -> [String] {
+        var notes: [String] = []
+        await lidMode.refresh()
         if snapshot?.lidMode != true, lidMode.isEnabled, let problem = await lidModeProblem(false) {
-            notes.append("Couldn't turn lid-closed mode off: \(problem)")
+            notes.append("Couldn't turn off lid-closed mode. \(problem)")
         }
         let lowPower = self.lowPower
+        // The move's own restore decides Low Power Mode when it changed it; otherwise the guard's change is undone.
         let undoGuardLowPower = defaults.bool(forKey: Keys.lowPowerSetByGuard) && snapshot?.lowPowerOnBattery == nil
-        defaults.set(false, forKey: Keys.lowPowerSetByGuard)
-        await Task.detached {
+        let guardUndone = await Task.detached { () -> Bool in
             Self.restorePrivileged(snapshot, lowPower: lowPower)
-            if undoGuardLowPower {
-                try? lowPower.setForBattery(false)
-            }
+            return undoGuardLowPower && (try? lowPower.setForBattery(false)) != nil
         }.value
+        if snapshot?.lowPowerOnBattery != nil || guardUndone {
+            defaults.set(false, forKey: Keys.lowPowerSetByGuard)
+        }
+        defaults.removeObject(forKey: Keys.moveSnapshot)
         return notes + (await updateShield())
     }
 
@@ -763,23 +920,26 @@ final class AppModel: ObservableObject {
     }
 
     private func shieldSoon() {
+        guard !isPreview else { return }
         Task { await updateShield() }
     }
 
     /// One shield step. Its commands run on `firewallQueue`; after a quit has started, it does nothing more.
     private func stepShield() async -> [String] {
-        guard !isQuitting else { return [] }
+        guard !isQuitting, !isPreview else { return [] }
         let firewall = self.firewall
         let step = shield.step(wanted: shieldWanted)
         switch step {
         case .none:
             return []
         case .raise, .reapply:
-            // Needs the admin permission; without it the panel says "not shielded".
-            guard lidMode.isSetUp else { return [] }
+            // Needs the admin permission; without it the panel says "not shielded", and the note tells Claude.
+            guard lidMode.isSetUp else {
+                return ["The firewall shield stayed off: set up Awake's permission in Awake Settings first."]
+            }
             if step == .raise {
                 guard let read = await firewallQueue.run({ firewall.read() }), !isQuitting else { return [] }
-                guard let current = read else { return ["The firewall shield didn't switch on."] }
+                guard let current = read else { return ["Couldn't turn on the firewall shield."] }
                 shield.willRaise(from: current)
             }
             // Read the firewall back: a raise can fail partway, so the snapshot alone proves nothing. Nothing applied
@@ -790,9 +950,9 @@ final class AppModel: ObservableObject {
             }) else { return [] }
             firewallNow = observed
             shield.didApply(observed: observed)
-            return isShielded ? [] : ["The firewall shield didn't switch on."]
+            return isShielded ? [] : ["Couldn't turn on the firewall shield."]
         case .lower:
-            return await lowerShield() ? [] : ["Couldn't turn the firewall shield off."]
+            return await lowerShield() ? [] : ["Couldn't turn off the firewall shield."]
         }
     }
 
@@ -858,7 +1018,7 @@ final class AppModel: ObservableObject {
     /// Queues a shortcut behind any still running, off the main actor. Empty names are skipped.
     private func runShortcut(_ name: String) {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
+        guard !name.isEmpty, !isPreview else { return }
         let previous = shortcutRun, shortcuts = self.shortcuts
         shortcutRun = Task { @MainActor in
             _ = await previous?.value
@@ -894,6 +1054,7 @@ final class AppModel: ObservableObject {
     /// changes. A request the running check already covers joins it; a sharing request during a Tailscale-only
     /// check runs once that one ends.
     private func refreshReach(sharing: Bool) {
+        guard !isPreview else { return }
         guard !isRefreshingReach else {
             if sharing, !reachCheckIncludesSharing { reachRecheck = true }
             return
@@ -913,11 +1074,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// For `--render-preview` only, which draws once and exits.
-    func refreshReachNow() {
-        applyReach(tailscaleCLI.status(), sharingCheck.servicesOn())
-    }
-
     /// `services` is nil when the sharing ports weren't checked this time; reach shows once they have been.
     private func applyReach(_ status: TailscaleStatus?, _ services: [SharingService]?) {
         if tailscale != status { tailscale = status }
@@ -934,7 +1090,7 @@ final class AppModel: ObservableObject {
         case .remoteLoginOff?:
             NSWorkspace.shared.open(Self.sharingSettingsURL)
         case .tailscaleOff?:
-            NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: "/Applications/Tailscale.app"),
+            NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: TailscaleCLI.appPath),
                                                configuration: NSWorkspace.OpenConfiguration())
         case .tailscaleMissing?, nil:
             break
@@ -952,6 +1108,8 @@ final class AppModel: ObservableObject {
         }
         set {
             keepAwakeWhileClaudeWorks = newValue == .whileClaudeWorks
+            // Fresh, not up to 30 s old: the session asking for this is likely working right now.
+            refreshAwakeWatch()
             claudeWasWorking = claudeWorking > 0
             claudeIdleSince = nil
             switch newValue {
@@ -964,44 +1122,64 @@ final class AppModel: ObservableObject {
 
     // MARK: - Lid-closed mode
 
-    /// Switches lid-closed mode (running setup first if needed). Returns a problem description, or nil.
+    static let setUpCancelled = "The password prompt was cancelled."
+
+    /// Switches lid-closed mode (running setup first if needed). Returns a problem, as a sentence, or nil. Turning on
+    /// lid-closed mode that was already on (set by another tool or by hand) doesn't make it Awake's to turn off.
     func lidModeProblem(_ enabled: Bool) async -> String? {
         do {
             if enabled, !lidMode.isSetUp {
                 try await lidMode.setUp()
                 shieldSoon()
             }
-            try lidMode.setEnabled(enabled)
-            defaults.set(enabled, forKey: Keys.lidModeSetByAwake)
+            if enabled { await lidMode.refresh() }
+            let wasOn = enabled && lidMode.isEnabled
+            try await lidMode.setEnabled(enabled)
+            if !wasOn {
+                defaults.set(enabled, forKey: Keys.lidModeSetByAwake)
+            }
             return nil
         } catch LidModeError.setUpCancelled {
-            return "the password prompt was cancelled"
+            return Self.setUpCancelled
         } catch {
             return error.localizedDescription
         }
     }
 
+    /// Errors go to a notification and a panel alert, not a modal alert: a modal would stall the main actor (tick,
+    /// guard, control socket). Cancelling the password prompt isn't an error.
     func setLidModeFromMenu(_ enabled: Bool) async {
-        if let problem = await lidModeProblem(enabled), problem != "the password prompt was cancelled" {
-            Self.showAlert("Couldn't change lid-closed mode", problem)
+        guard let problem = await lidModeProblem(enabled) else {
+            lastFailure = nil
+            return
         }
+        guard problem != Self.setUpCancelled else { return }
+        let title = enabled ? "Couldn't turn on lid-closed mode" : "Couldn't turn off lid-closed mode"
+        lastFailure = "\(title). \(problem)"
+        Notifier.post(title: title, body: problem)
     }
 
     func setUpLidMode() async {
         do {
             try await lidMode.setUp()
+            lastFailure = nil
             shieldSoon()
         } catch LidModeError.setUpCancelled {
         } catch {
-            Self.showAlert("Couldn't set up Awake's permission", error.localizedDescription)
+            lastFailure = "Couldn't set up Awake's permission. \(error.localizedDescription)"
+            Notifier.post(title: "Couldn't set up Awake's permission", body: error.localizedDescription)
         }
     }
 
     // MARK: - Launch at login
 
     var launchAtLogin: Bool {
-        get { SMAppService.mainApp.status == .enabled }
+        get { isPreview ? previewLaunchAtLogin : SMAppService.mainApp.status == .enabled }
         set {
+            guard !isPreview else {
+                previewLaunchAtLogin = newValue
+                return objectWillChange.send()
+            }
             do {
                 if newValue {
                     try SMAppService.mainApp.register()
@@ -1027,20 +1205,36 @@ final class AppModel: ObservableObject {
 
     var canJoinHotspotNow: Bool { !hotspotSSID.isEmpty && wifi.isPoweredOn && !isOnHotspot }
 
-    func hotspotPassword() -> String {
-        if let cachedPassword { return cachedPassword }
-        let password = HotspotPasswordStore.read()
-        cachedPassword = password
-        return password
+    /// Re-reads the hotspot password from the keychain off the main actor, for when someone is there to answer an
+    /// "allow" prompt: at launch and when Settings opens. A failed read keeps the cached value.
+    @discardableResult
+    func loadHotspotPassword() async -> String? {
+        guard !isPreview else { return savedHotspotPassword }
+        let saves = passwordSaves, queue = keychainQueue
+        let read = await withCheckedContinuation { continuation in
+            queue.async { continuation.resume(returning: HotspotPasswordStore.read()) }
+        }
+        if let read, saves == passwordSaves, read != savedHotspotPassword {
+            savedHotspotPassword = read
+        }
+        return savedHotspotPassword
     }
 
+    /// Caches the password and saves it to the keychain off the main actor (saves stay in order).
     func setHotspotPassword(_ password: String) {
-        guard password != cachedPassword else { return }
-        cachedPassword = password
-        HotspotPasswordStore.save(password)
+        guard password != savedHotspotPassword, !isPreview else { return }
+        savedHotspotPassword = password
+        passwordSaves += 1
+        keychainQueue.async { HotspotPasswordStore.save(password) }
+    }
+
+    /// Called when Settings opens: the user is there to answer a keychain prompt.
+    func settingsWillOpen() {
+        Task { await loadHotspotPassword() }
     }
 
     func refreshNearbyNetworks() {
+        guard !isPreview else { return }
         let wifiControl = self.wifiControl
         Task {
             nearbyNetworks = await Task.detached { wifiControl.nearbyNetworkNames() }.value
@@ -1063,6 +1257,7 @@ final class AppModel: ObservableObject {
     }
 
     private func checkSoon() {
+        guard !isPreview else { return }
         Task { await checkNetwork() }
     }
 
@@ -1074,8 +1269,12 @@ final class AppModel: ObservableObject {
         let wifiControl = self.wifiControl
         let state = await Task.detached { wifiControl.state() }.value
         let result = await probe.check()
-        wifi = state
-        connectivity = result
+        if wifi != state {
+            wifi = state
+        } else {
+            updateProfile()  // unchanged Wi-Fi still lets a held profile lapse
+        }
+        if connectivity != result { connectivity = result }
         if !didFirstNetworkCheck {
             // A shield left up by a crash comes down now if nothing wants it any more.
             didFirstNetworkCheck = true
@@ -1111,7 +1310,15 @@ final class AppModel: ObservableObject {
     @discardableResult
     private func joinHotspot(leaving: String?, automatic: Bool) async -> String? {
         let ssid = hotspotSSID
-        let password = hotspotPassword()
+        // Failover uses the cache only (see `savedHotspotPassword`); a join someone asked for may read the keychain,
+        // off the main actor, if the launch read didn't get it.
+        let cached = automatic ? savedHotspotPassword ?? "" : savedHotspotPassword
+        let password: String
+        if let cached {
+            password = cached
+        } else {
+            password = await loadHotspotPassword() ?? ""
+        }
         let wifiControl = self.wifiControl
         let failure: Error? = await Task.detached {
             do {
@@ -1180,7 +1387,6 @@ final class AppModel: ObservableObject {
         updateDesk()
         refreshPower()
         guard tickCount % 6 == 0 else { return }
-        lidMode.refresh()
         refreshAwakeWatch()
         if Date.now.timeIntervalSince(lastReachCheck) >= Self.reachInterval {
             refreshReach(sharing: false)
@@ -1192,12 +1398,15 @@ final class AppModel: ObservableObject {
             shieldSoon()  // retries a raise or lower that didn't finish
         }
         checkEndConditions()
-        Task { await runGuard() }
+        Task {
+            await lidMode.refresh()  // pmset, off the main actor
+            await runGuard()
+        }
     }
 
     private func updateDesk() {
         let state = DeskState.current()
-        atDesk = state.atDesk
+        if atDesk != state.atDesk { atDesk = state.atDesk }
         switch desk.update(state, now: .now) {
         case .left? where deskSuggestions && !onTheMove && !PowerSource.isLidClosed():
             deskNudge = .left
@@ -1215,13 +1424,23 @@ final class AppModel: ObservableObject {
     }
 
     private func refreshAwakeWatch() {
+        guard !isPreview else { return }
         let holders = AwakeWatch.holders()
         let isClaude: (AwakeHolder) -> Bool = { holder in
             holder.processName == "caffeinate"
                 && AwakeWatch.processParent(holder.pid).flatMap(AwakeWatch.processName) == "claude"
         }
-        claudeWorking = holders.filter(isClaude).count
-        otherAwakeApps = AwakeWatch.appNames(for: holders.filter { !isClaude($0) })
+        let working = holders.filter(isClaude).count
+        let others = AwakeWatch.appNames(for: holders.filter { !isClaude($0) })
+        if claudeWorking != working { claudeWorking = working }
+        if otherAwakeApps != others { otherAwakeApps = others }
+    }
+
+    /// A move or keep-awake that Claude started (through the control socket) counts as Claude having worked, even
+    /// if its own keep-awake was never seen.
+    private func claudeHasWorked() {
+        claudeWasWorking = true
+        claudeIdleSince = nil
     }
 
     private func checkEndConditions() {
@@ -1256,15 +1475,21 @@ final class AppModel: ObservableObject {
         return Date.now.timeIntervalSince(since) >= Self.claudeIdleGrace
     }
 
+    /// One run at a time; a stop happens once per episode (`GuardEpisode`), so lid-closed mode that won't turn off
+    /// doesn't bring another notification and sleep-now every 30 s and on every thermal change.
     private func runGuard() async {
+        guard !isGuarding else { return }
+        isGuarding = true
+        defer { isGuarding = false }
         let lowPower = self.lowPower
         lowPowerOnBattery = await Task.detached { lowPower.isOnForBattery() }.value
         let input = GuardInput(thermal: ThermalLevel(ProcessInfo.processInfo.thermalState),
-                               lidClosed: PowerSource.isLidClosed(), onBattery: PowerSource.isOnBattery(),
+                               lidClosed: PowerSource.isLidClosed(), externalDisplay: DeskState.current().externalDisplay,
+                               onBattery: PowerSource.isOnBattery(), chargerTooWeak: power.chargerTooWeak,
                                batteryPercent: PowerSource.batteryLevel(), keepingAwake: keepAwake.isActive,
                                lidModeOn: lidMode.isEnabled, lowPowerOn: lowPowerOnBattery ?? true,
                                enabled: safetyEnabled)
-        switch HotBagGuard.decide(input) {
+        switch guardEpisode.filter(HotBagGuard.decide(input)) {
         case .none:
             break
         case .enableLowPower:
@@ -1293,16 +1518,42 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Sleeps the Mac if its lid is closed, but not in clamshell mode at a desk (an external display on).
     private func sleepIfLidClosed() {
-        guard PowerSource.isLidClosed() else { return }
+        guard HotBagGuard.shouldSleepNow(lidClosed: PowerSource.isLidClosed(),
+                                         externalDisplay: DeskState.current().externalDisplay) else { return }
         Task.detached { SystemSleep.sleepNow() }
     }
 
-    static func showAlert(_ title: String, _ message: String) {
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.runModal()
+    // MARK: - Preview
+
+    /// The sample `--render-preview` draws, in a model of its own (never `shared`) that reads and changes nothing.
+    static func preview(_ sample: PreviewSample = PreviewSample()) -> AppModel {
+        let defaults = MemoryDefaults()
+        defaults.set(LidModeController.ruleVersion, forKey: LidModeController.ruleVersionKey)
+        let model = AppModel(defaults: defaults, preview: sample)
+        model.showPreview(sample)
+        return model
+    }
+
+    private func showPreview(_ sample: PreviewSample) {
+        launchAtLogin = true
+        hotspotSSID = sample.hotspot
+        autoHotspot = true
+        trustedNetworks = sample.trustedNetworks
+        publicShortcut = sample.publicShortcut
+        wifi = WiFiState(isPoweredOn: true, ssid: sample.wifiName)
+        connectivity = sample.connectivity
+        shield.willRaise(from: FirewallState(enabled: false, stealth: false))
+        shield.didApply(observed: FirewallShield.shielded)
+        firewallNow = FirewallShield.shielded
+        sharingOn = sample.sharingOn
+        tailscale = sample.tailscale
+        reachChecked = true
+        claudeWorking = sample.claudeSessions
+        otherAwakeApps = sample.otherAwakeApps
+        nearbyNetworks = sample.nearbyNetworks
+        lastFailure = sample.lastFailure
+        keepAwakeOption = sample.keepAwake
     }
 }

@@ -14,15 +14,15 @@
 ## What it does
 
 - **On the Move**: one switch for when you leave your desk. Your Mac keeps running with the lid closed, stays awake, and switches to your iPhone hotspot if the internet drops. It also turns on Low Power Mode (on battery) and the macOS firewall with stealth mode. When you're back, everything goes back to how it was. By default it ends by itself once Claude Code has finished working.
-- **Keep awake**: for 1 or 4 hours, always, or *while Claude works*: Awake watches Claude Code sessions and lets your Mac sleep a few minutes after the last one goes idle.
+- **Keep awake**: for 1 or 4 hours, always, or *while Claude works*: Awake watches Claude Code sessions and lets your Mac sleep a few minutes after the last one goes idle. Keep awake works with the lid open; to keep running with the lid closed, use lid-closed mode or On the Move.
 - **Who's keeping your Mac awake**: the panel names other apps holding your Mac awake, and warns when lid-closed mode was left on by something else.
 - **Hot-bag guard**: if your Mac warms up with the lid closed it turns on Low Power Mode; if it gets hot or the battery drops to 20%, it turns everything off and puts the Mac to sleep.
 - **Café Wi-Fi**: Awake tells a Wi-Fi sign-in page apart from a dead connection, so it shows "Sign in" instead of burning your phone's data.
 - **Auto-hotspot**: when Wi-Fi drops, or stays connected with no internet, Awake joins your iPhone's Personal Hotspot within seconds, and goes back to Wi-Fi when it's healthy again.
 - **Home vs public Wi-Fi**: mark your own networks as trusted (your hotspot always is). On any other Wi-Fi, Awake turns on the macOS firewall with stealth mode, points out sharing that's on (Screen Sharing, File Sharing, Remote Login), and can run a Shortcut; back on a trusted network it puts the firewall back and can run another.
-- **Battery**: time left on battery in the panel, a heads-up when it falls under 15, 30 or 60 minutes, and a warning when a charger is too weak to keep up.
-- **Reach from your phone**: shows whether your phone can reach this Mac over Tailscale + SSH (and that it stays on with the lid closed), with a Copy SSH button, or the first thing that's missing.
-- **Desk detection**: unplug from your monitor and charger with the lid open and Awake offers On the Move; come back and it offers to turn it off.
+- **Battery**: time left on battery in the panel, one heads-up when it falls under the threshold you choose in Settings (15, 30 or 60 minutes; 30 by default), and a warning when a charger is too weak to keep up.
+- **Reach from your phone**: with Tailscale installed (the app, or the Homebrew CLI), shows whether your phone can reach this Mac over Tailscale + SSH (and that it stays on with the lid closed), with a Copy SSH button, or the first thing that's missing.
+- **Desk detection**: unplug from your monitor or your charger (either counts) with the lid open and Awake offers On the Move; plug both back in and it offers to turn it off.
 - **Claude Code integration**: an MCP server, so a Claude session can switch On the Move when you tell it you're leaving.
 
 ## Known limitations
@@ -40,7 +40,7 @@ cd awake
 ./build_app.sh --install
 ```
 
-Awake appears in the menu bar as Mochi's two eyes: closed when your Mac sleeps normally, open and looking up while it's kept awake, and with motion lines while you're On the Move. If you use a menu bar manager (Hidden Bar, Bartender, Ice), drag Awake's icon to the visible side.
+Awake appears in the menu bar as Mochi's two eyes: closed while Awake is off, and open and looking up while Awake keeps your Mac awake (On the Move included). Its tooltip and VoiceOver say which. When that changes, the eyes animate open or closed; with Reduce Motion on (System Settings → Accessibility → Display) they switch without animating. If you use a menu bar manager (Hidden Bar, Bartender, Ice), drag Awake's icon to the visible side.
 
 ### Connect Claude Code
 
@@ -51,6 +51,8 @@ claude mcp add --scope user awake -- /Applications/Awake.app/Contents/MacOS/awak
 New Claude Code sessions then understand things like "hey, I got to move", "heading out", or "I'm back at my desk", and can report Awake's status. The command is also in Awake's Settings with a Copy button.
 
 ### Command line
+
+`awakectl` lives inside the app. To type it as plain `awakectl`, link it into a folder on your PATH, for example `ln -s /Applications/Awake.app/Contents/MacOS/awakectl ~/.local/bin/awakectl`.
 
 ```bash
 /Applications/Awake.app/Contents/MacOS/awakectl status
@@ -67,6 +69,7 @@ awakectl hotspot on|off|join           # auto-hotspot, or join now
 | Your password, once | First time something needs it | Installs `/etc/sudoers.d/awake`, which allows exactly these commands without a password, and nothing else: `pmset -a disablesleep 0/1`, `pmset -b lowpowermode 0/1`, `pmset sleepnow`, and the firewall's `--setglobalstate on/off` and `--setstealthmode on/off`. It is checked with `visudo` before it goes live. |
 | Location access | When you set up auto-hotspot or trusted networks | macOS hides Wi-Fi network names from apps without it. Awake never reads your location. |
 | Notifications | First launch | Tells you when it switched networks, ended On the Move, or turned something off for safety. |
+| Login item | First launch | Starts Awake when you log in. Turn it off in Awake Settings → General. |
 | Hotspot password | Optional, in Settings | Stored in your login keychain. |
 
 Like any sudoers rule, those exact commands then work without a password for anything running as your user, not only Awake. None of them can read your data or widen access; the worst a misbehaving app could do is keep your Mac awake, put it to sleep, or switch the firewall off. Remove the rule with the uninstall command below if that trade-off doesn't suit you.
@@ -75,10 +78,29 @@ On your iPhone, keep **Settings → Personal Hotspot → Allow Others to Join** 
 
 ## Uninstall
 
+1. Quit Awake first. Quitting puts back everything it changed (lid-closed mode, Low Power Mode, the firewall):
+
+   ```bash
+   osascript -e 'quit app "Awake"'
+   ```
+
+2. Turn off Launch at login: System Settings → General → Login Items, switch Awake off (or turn it off in Awake Settings → General before you quit).
+3. Remove the MCP entry, the sudoers rule and the app:
+
+   ```bash
+   claude mcp remove awake -s user        # if you connected Claude Code
+   sudo rm /etc/sudoers.d/awake            # if you set up the admin permission
+   rm -rf /Applications/Awake.app
+   rm -f ~/.local/bin/awakectl             # if you linked awakectl
+   ```
+
+Optional cleanup:
+
 ```bash
-claude mcp remove awake -s user        # if you connected Claude Code
-sudo rm /etc/sudoers.d/awake            # if you set up the admin permission
-rm -rf /Applications/Awake.app
+defaults delete io.github.arthur-bump-pm.Awake        # settings
+security delete-generic-password -s "Awake Hotspot"    # saved hotspot password
+rm -rf ~/Library/Application\ Support/Awake            # control socket folder
+sudo pmset -a disablesleep 0                           # fallback: only if lid-closed mode is still on
 ```
 
 ## Credits

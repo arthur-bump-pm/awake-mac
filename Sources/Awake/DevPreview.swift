@@ -1,30 +1,143 @@
 import AppKit
+import AwakeCore
+import IOKit.pwr_mgt
 import SwiftUI
 
-/// `Awake --render-preview <dir>` writes the panel and Settings as PNGs and exits, without
-/// starting the app or touching any setting. For reviewing the design.
+/// `Awake --render-preview <folder>` writes the panel and Settings as PNGs and exits. It draws a made-up sample
+/// (`PreviewSample`) in a model of its own: it never reads or changes the user's settings, never runs a command and
+/// never starts the app. For reviewing the design, edge cases included.
 enum DevPreview {
     @MainActor
     static func runIfRequested() {
         let arguments = CommandLine.arguments
-        guard let flag = arguments.firstIndex(of: "--render-preview"), arguments.indices.contains(flag + 1) else { return }
-        let directory = URL(fileURLWithPath: arguments[flag + 1])
+        guard let flag = arguments.firstIndex(of: "--render-preview") else { return }
+        guard arguments.indices.contains(flag + 1) else { fail("usage: Awake --render-preview <folder>") }
+        let directory = URL(fileURLWithPath: arguments[flag + 1], isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        } catch {
+            fail("Awake: can't create \(directory.path): \(error.localizedDescription)")
+        }
         _ = NSApplication.shared
         Theme.registerFonts()
-        let model = AppModel.shared
-        model.refreshReachNow()
-        save(PanelView(model: model, openSettings: {}).environment(\.frostedGlass, false)
-                .padding(28).background(Color(hex: 0x33405e)), to: directory, name: "panel.png")
-        save(SettingsContent(model: model).frame(width: 520).background(Theme.void), to: directory, name: "settings.png")
+        let model = AppModel.preview()
+        do {
+            try save(PanelView(model: model, openSettings: {}).environment(\.frostedGlass, false)
+                        .padding(28).background(Color(hex: 0x33405e)), to: directory, name: "panel.png")
+            try save(SettingsContent(model: model).environment(\.liveControls, false)
+                        .frame(width: 520).background(Theme.void), to: directory, name: "settings.png")
+        } catch {
+            fail("Awake: can't write the preview to \(directory.path): \(error.localizedDescription)")
+        }
+        print("Wrote panel.png and settings.png to \(directory.path)")
         exit(0)
     }
 
+    private static func fail(_ message: String) -> Never {
+        FileHandle.standardError.write(Data((message + "\n").utf8))
+        exit(1)
+    }
+
+    private struct RenderFailed: LocalizedError {
+        var errorDescription: String? { "the view didn't render" }
+    }
+
     @MainActor
-    private static func save<V: View>(_ view: V, to directory: URL, name: String) {
+    private static func save<V: View>(_ view: V, to directory: URL, name: String) throws {
         let renderer = ImageRenderer(content: view.environment(\.colorScheme, .dark))
         renderer.scale = 2
         guard let tiff = renderer.nsImage?.tiffRepresentation,
-              let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else { return }
-        try? png.write(to: directory.appendingPathComponent(name))
+              let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else {
+            throw RenderFailed()
+        }
+        try png.write(to: directory.appendingPathComponent(name))
     }
+}
+
+/// The made-up state the preview draws, chosen to show edge cases: the longest Wi-Fi name (32 characters) on a
+/// sign-in page, four alerts at once, a weak charger next to lid-closed mode, and other apps holding the Mac awake.
+/// No real names, paths or settings.
+struct PreviewSample {
+    static let appPath = "/Applications/Awake.app"
+    static let userName = "alex"
+
+    var wifiName = "Harbourside Coworking Guest WiFi"
+    var connectivity = Connectivity.captivePortal(nil)
+    var hotspot = "Travel Phone"
+    var trustedNetworks = ["Home Network", "Studio 5G"]
+    var publicShortcut = "Public Wi-Fi"
+    var nearbyNetworks = ["Harbourside Coworking Guest WiFi", "Studio 5G", "Travel Phone"]
+    /// On, but not set by Awake, so the panel also warns that it was turned on elsewhere.
+    var lidClosedMode = true
+    var adminPermission = true
+    var locationAllowed = true
+    var keepAwake = KeepAwakeOption.minutes(240)
+    var claudeSessions = 2
+    var otherAwakeApps = ["Music"]
+    var sharingOn: [SharingService] = [.screenSharing, .remoteLogin]
+    var tailscale: TailscaleStatus? = TailscaleStatus(online: true, dnsName: "example-mac.example-tailnet.ts.net",
+                                                      ips: ["100.64.0.10"])
+    var lastFailure: String? = "Couldn't turn off lid-closed mode. sudo: a password is required"
+    /// Plugged into a 30 W charger that can't keep up.
+    var power = PowerReading(percent: 64, onBattery: false, externalConnected: true, isCharging: false, minutesLeft: nil,
+                             drawWatts: 6, adapterWatts: 30)
+}
+
+/// UserDefaults kept in memory only. Every read and write is overridden, so nothing reaches the user's settings
+/// (a suite's search list would otherwise fall through to the app's own domain).
+final class MemoryDefaults: UserDefaults {
+    private var values: [String: Any] = [:]
+    private var registered: [String: Any] = [:]
+
+    init() {
+        super.init(suiteName: "io.github.arthur-bump-pm.Awake.preview")!
+    }
+
+    override func register(defaults registrationDictionary: [String: Any]) {
+        registered.merge(registrationDictionary) { _, new in new }
+    }
+
+    override func object(forKey defaultName: String) -> Any? { values[defaultName] ?? registered[defaultName] }
+    override func set(_ value: Any?, forKey defaultName: String) { values[defaultName] = value }
+    override func set(_ value: Bool, forKey defaultName: String) { values[defaultName] = value }
+    override func set(_ value: Int, forKey defaultName: String) { values[defaultName] = value }
+    override func set(_ value: Double, forKey defaultName: String) { values[defaultName] = value }
+    override func set(_ value: Float, forKey defaultName: String) { values[defaultName] = value }
+    override func set(_ url: URL?, forKey defaultName: String) { values[defaultName] = url }
+    override func removeObject(forKey defaultName: String) { values[defaultName] = nil }
+
+    override func string(forKey defaultName: String) -> String? { object(forKey: defaultName) as? String }
+    override func array(forKey defaultName: String) -> [Any]? { object(forKey: defaultName) as? [Any] }
+    override func stringArray(forKey defaultName: String) -> [String]? { object(forKey: defaultName) as? [String] }
+    override func dictionary(forKey defaultName: String) -> [String: Any]? {
+        object(forKey: defaultName) as? [String: Any]
+    }
+    override func data(forKey defaultName: String) -> Data? { object(forKey: defaultName) as? Data }
+    override func url(forKey defaultName: String) -> URL? { object(forKey: defaultName) as? URL }
+    override func bool(forKey defaultName: String) -> Bool { (object(forKey: defaultName) as? NSNumber)?.boolValue ?? false }
+    override func integer(forKey defaultName: String) -> Int { (object(forKey: defaultName) as? NSNumber)?.intValue ?? 0 }
+    override func double(forKey defaultName: String) -> Double {
+        (object(forKey: defaultName) as? NSNumber)?.doubleValue ?? 0
+    }
+    override func float(forKey defaultName: String) -> Float { (object(forKey: defaultName) as? NSNumber)?.floatValue ?? 0 }
+    override func dictionaryRepresentation() -> [String: Any] { registered.merging(values) { _, new in new } }
+}
+
+/// Answers `pmset -g` with the sample's lid-closed mode; runs nothing.
+struct PreviewCommands: CommandRunning {
+    var lidClosedMode: Bool
+
+    func run(_ executable: String, _ arguments: [String]) -> CommandResult {
+        CommandResult(status: 0, output: " SleepDisabled\t\t\(lidClosedMode ? 1 : 0)\n")
+    }
+}
+
+/// Keep-awake without a real power assertion.
+struct PreviewAssertions: PowerAssertionManaging {
+    func create(type: CFString, name: CFString, id: inout IOPMAssertionID) -> IOReturn {
+        id = 1
+        return kIOReturnSuccess
+    }
+
+    func release(id: IOPMAssertionID) {}
 }

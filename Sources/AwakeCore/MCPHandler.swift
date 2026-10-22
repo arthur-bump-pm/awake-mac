@@ -15,7 +15,7 @@ public struct MCPHandler {
         """
 
     /// One week, matching the app's limit.
-    static let maxMinutes = 10_080
+    static let maxMinutes = ControlRequest.maxKeepAwakeMinutes
 
     private let version: String
     private let send: Send
@@ -23,6 +23,23 @@ public struct MCPHandler {
     public init(version: String, send: @escaping Send) {
         self.version = version
         self.send = send
+    }
+
+    /// The replies to one line from the client: one message, or a batch of them. A line that isn't JSON gets a parse
+    /// error (-32700) and a value that isn't a message object an invalid-request error (-32600), both with id null,
+    /// as JSON-RPC 2.0 asks. A blank line gets nothing.
+    public func replies(toLine line: String) -> [[String: Any]] {
+        guard !line.trimmingCharacters(in: .whitespaces).isEmpty else { return [] }
+        guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8), options: [.fragmentsAllowed]) else {
+            return [Self.error(id: NSNull(), code: -32700, message: "Parse error: the line isn't valid JSON.")]
+        }
+        let messages = object as? [Any] ?? [object]
+        return messages.compactMap { message in
+            guard let message = message as? [String: Any] else {
+                return Self.error(id: NSNull(), code: -32600, message: "Invalid request: expected a JSON object.")
+            }
+            return reply(to: message)
+        }
     }
 
     /// The reply to one incoming message, or nil when none is due (notifications, client responses).
@@ -47,8 +64,12 @@ public struct MCPHandler {
         case "tools/call":
             return result(id, callTool(params))
         default:
-            return ["jsonrpc": "2.0", "id": id, "error": ["code": -32601, "message": "Method not found: \(method)"]]
+            return Self.error(id: id, code: -32601, message: "Method not found: \(method)")
         }
+    }
+
+    private static func error(id: Any, code: Int, message: String) -> [String: Any] {
+        ["jsonrpc": "2.0", "id": id, "error": ["code": code, "message": message]]
     }
 
     private func result(_ id: Any, _ result: [String: Any]) -> [String: Any] {
@@ -72,6 +93,8 @@ public struct MCPHandler {
             request = ControlRequest(.move, on: on!)
         case "awake_keep_awake":
             switch arguments["mode"] as? String {
+            case "indefinitely":
+                request = ControlRequest(.keepAwake, on: true)
             case "off":
                 request = ControlRequest(.keepAwake, on: false)
             case "while_claude_works":
@@ -82,7 +105,8 @@ public struct MCPHandler {
                 }
                 request = ControlRequest(.keepAwake, on: true, minutes: minutes)
             default:
-                request = ControlRequest(.keepAwake, on: true)
+                // A missing or unknown mode must not keep the Mac awake indefinitely.
+                return toolText("mode must be one of indefinitely, timed, while_claude_works or off.", isError: true)
             }
         case "awake_lid_closed_mode":
             request = ControlRequest(.lidMode, on: on!)
@@ -129,8 +153,11 @@ public struct MCPHandler {
             head out, pack up, commute, travel or go to a café while work keeps running, e.g. "hey, I got to \
             move", "I'm heading out", "gotta run", "packing up my laptop". It keeps the Mac running with the lid \
             closed and switches to the iPhone hotspot if the internet drops, so this and other Claude sessions \
-            keep working. Turn it OFF when they say they're settled or back at a desk ("I'm back", "at my desk \
-            now"); that restores their previous settings.
+            keep working. Depending on the user's Awake Settings it also turns on the macOS firewall with stealth \
+            mode and, on battery, Low Power Mode. It ends by itself: by default a few minutes after every Claude \
+            session has finished, or after 4 hours, or only when turned off (the status says which). Tell the user \
+            briefly what changed and when it ends. Turn it OFF when they say they're settled or back at a desk \
+            ("I'm back", "at my desk now"); that puts back their previous settings.
             """,
              ["on": ["type": "boolean", "description": "true = on the move, false = back at a desk"]], required: ["on"]),
         tool("awake_status", "Awake Status",

@@ -176,19 +176,19 @@ render(width: 1024, height: 1024, to: "icon_1024.png") { ctx in
     drawIcon(ctx, tile: CGRect(x: 100, y: 100, width: 824, height: 824))
 }
 
-// Menu bar glyph: asleep / awake / on the move, large and at true retina size, on light and dark bars.
-render(width: 1020, height: 420, to: "glyph_preview.png") { ctx in
-    let states: [AwakeMark.GlyphState] = [.asleep, .awake, .moving]
+// Menu bar glyph opening: openness 0 (asleep), 0.25, 0.5, 0.75, 1 (awake), large and at true retina size
+// (18 pt = 36 px), on dark and light bars.
+let openness: [CGFloat] = [0, 0.25, 0.5, 0.75, 1]
+render(width: 1330, height: 420, to: "glyph_preview.png") { ctx in
     for (row, dark) in [true, false].enumerated() {
         let y = CGFloat(row) * 210
         ctx.setFillColor(dark ? srgb(36, 36, 40) : srgb(236, 236, 238))
-        ctx.fill(CGRect(x: 0, y: y, width: 1020, height: 210))
-        for (i, state) in states.enumerated() {
-            let x = 30 + CGFloat(i) * 330
+        ctx.fill(CGRect(x: 0, y: y, width: 1330, height: 210))
+        for (i, open) in openness.enumerated() {
+            let x = 30 + CGFloat(i) * 260
             ctx.setFillColor(dark ? gray(255) : gray(0))
-            ctx.setStrokeColor(dark ? gray(255) : gray(0))
-            AwakeMark.drawGlyph(in: ctx, rect: CGRect(x: x, y: y + 25, width: 160, height: 160), state: state)
-            AwakeMark.drawGlyph(in: ctx, rect: CGRect(x: x + 200, y: y + 87, width: 36, height: 36), state: state)
+            AwakeMark.drawGlyph(in: ctx, rect: CGRect(x: x, y: y + 25, width: 160, height: 160), openness: open)
+            AwakeMark.drawGlyph(in: ctx, rect: CGRect(x: x + 180, y: y + 87, width: 36, height: 36), openness: open)
         }
     }
 }

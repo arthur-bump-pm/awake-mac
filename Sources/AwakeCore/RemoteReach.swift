@@ -54,23 +54,33 @@ public struct TailscaleStatus: Equatable, Sendable {
     }
 }
 
-/// Reads this Mac's Tailscale status with the CLI inside the Tailscale app. Blocks, so call it off the main actor.
+/// Reads this Mac's Tailscale status with its CLI: the one inside Tailscale.app (Mac App Store or standalone), or a
+/// Homebrew or standalone `tailscale` on the usual paths. Blocks, so call it off the main actor.
 public struct TailscaleCLI: Sendable {
-    public static let path = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+    public static let appPath = "/Applications/Tailscale.app"
+    /// Where the CLI can be, in order: inside the app, then Homebrew (Apple silicon, then Intel or a standalone CLI).
+    public static let paths = [
+        "\(appPath)/Contents/MacOS/Tailscale",
+        "/opt/homebrew/bin/tailscale",
+        "/usr/local/bin/tailscale",
+    ]
 
     private let runner: CommandRunning
-    private let isInstalled: @Sendable () -> Bool
+    private let locate: @Sendable () -> String?
 
+    /// `locate` returns the CLI to run, or nil when Tailscale isn't installed.
     public init(runner: CommandRunning = ProcessCommandRunner(timeout: 5),
-                isInstalled: @escaping @Sendable () -> Bool = { FileManager.default.isExecutableFile(atPath: TailscaleCLI.path) }) {
+                locate: @escaping @Sendable () -> String? = {
+                    TailscaleCLI.paths.first { FileManager.default.isExecutableFile(atPath: $0) }
+                }) {
         self.runner = runner
-        self.isInstalled = isInstalled
+        self.locate = locate
     }
 
     /// Nil when Tailscale isn't installed. Stopped, logged out or not answering all read as offline.
     public func status() -> TailscaleStatus? {
-        guard isInstalled() else { return nil }
-        let result = runner.run(Self.path, ["status", "--json"])
+        guard let path = locate() else { return nil }
+        let result = runner.run(path, ["status", "--json"])
         guard result.status == 0 else { return .offline }
         return TailscaleStatus.parse(result.output) ?? .offline
     }

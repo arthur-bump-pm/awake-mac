@@ -44,12 +44,8 @@ func send(_ request: ControlRequest) throws -> ControlResponse {
 func runMCP() -> Never {
     let handler = MCPHandler(version: version, send: send)
     while let line = readLine(strippingNewline: true) {
-        guard let data = line.data(using: .utf8), !data.isEmpty,
-              let object = try? JSONSerialization.jsonObject(with: data) else { continue }
-        let messages = object as? [[String: Any]] ?? [object as? [String: Any] ?? [:]]
-        for message in messages {
-            guard let reply = handler.reply(to: message),
-                  var out = try? JSONSerialization.data(withJSONObject: reply) else { continue }
+        for reply in handler.replies(toLine: line) {
+            guard var out = try? JSONSerialization.data(withJSONObject: reply) else { continue }
             out.append(0x0A)
             FileHandle.standardOutput.write(out)
         }

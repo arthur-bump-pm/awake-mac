@@ -1,4 +1,5 @@
 import AppKit
+import AwakeCore
 import CoreLocation
 import UserNotifications
 
@@ -84,21 +85,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 }
 
+/// The menu bar eyes, one template image per openness step (`EyeTransition.steps` + 1 frames), each drawn
+/// on first use and reused for every later animation.
 enum MenuBarIcon {
-    private static var cache: [AwakeMark.GlyphState: NSImage] = [:]
+    private static var cache: [Int: NSImage] = [:]
 
-    static func image(for state: AwakeMark.GlyphState) -> NSImage {
-        if let image = cache[state] { return image }
+    static func image(step: Int) -> NSImage {
+        if let image = cache[step] { return image }
+        let openness = CGFloat(EyeTransition.openness(ofStep: step))
         let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { rect in
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
             ctx.setFillColor(.black)
             ctx.setStrokeColor(.black)
-            AwakeMark.drawGlyph(in: ctx, rect: rect, state: state)
+            AwakeMark.drawGlyph(in: ctx, rect: rect, openness: openness)
             return true
         }
         image.isTemplate = true
         image.accessibilityDescription = "Awake"
-        cache[state] = image
+        cache[step] = image
         return image
     }
 }
@@ -145,11 +149,19 @@ enum Notifier {
 @MainActor
 final class LocationAccess: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published private(set) var status: CLAuthorizationStatus = .notDetermined
-    private let manager = CLLocationManager()
+    /// Nil with a fixed status (`--render-preview`), which never asks macOS.
+    private var manager: CLLocationManager?
 
-    override init() {
+    /// `fixed` pins the status without reading or asking for the real permission.
+    init(fixed: CLAuthorizationStatus? = nil) {
         super.init()
+        if let fixed {
+            status = fixed
+            return
+        }
+        let manager = CLLocationManager()
         manager.delegate = self
+        self.manager = manager
         status = manager.authorizationStatus
     }
 
@@ -157,6 +169,7 @@ final class LocationAccess: NSObject, ObservableObject, CLLocationManagerDelegat
     var isDenied: Bool { status == .denied || status == .restricted }
 
     func request() {
+        guard let manager else { return }
         if isDenied {
             NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices")!)
         } else {

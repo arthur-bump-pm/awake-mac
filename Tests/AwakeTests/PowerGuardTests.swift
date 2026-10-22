@@ -2,11 +2,13 @@ import XCTest
 @testable import AwakeCore
 
 final class HotBagGuardTests: XCTestCase {
-    private func input(thermal: ThermalLevel = .nominal, lidClosed: Bool = true, onBattery: Bool = true,
-                       percent: Int? = 80, keepingAwake: Bool = true, lidModeOn: Bool = true,
-                       lowPower: Bool = false, enabled: Bool = true) -> GuardInput {
-        GuardInput(thermal: thermal, lidClosed: lidClosed, onBattery: onBattery, batteryPercent: percent,
-                   keepingAwake: keepingAwake, lidModeOn: lidModeOn, lowPowerOn: lowPower, enabled: enabled)
+    private func input(thermal: ThermalLevel = .nominal, lidClosed: Bool = true, externalDisplay: Bool = false,
+                       onBattery: Bool = true, weakCharger: Bool = false, percent: Int? = 80,
+                       keepingAwake: Bool = true, lidModeOn: Bool = true, lowPower: Bool = false,
+                       enabled: Bool = true) -> GuardInput {
+        GuardInput(thermal: thermal, lidClosed: lidClosed, externalDisplay: externalDisplay, onBattery: onBattery,
+                   chargerTooWeak: weakCharger, batteryPercent: percent, keepingAwake: keepingAwake,
+                   lidModeOn: lidModeOn, lowPowerOn: lowPower, enabled: enabled)
     }
 
     func testDisabledDoesNothingEvenWhenHotAndEmpty() {
@@ -58,12 +60,67 @@ final class HotBagGuardTests: XCTestCase {
         XCTAssertEqual(HotBagGuard.decide(input(thermal: .nominal)), .none)
     }
 
+    func testLowBatteryFiresOnAChargerTooWeakToKeepUp() {
+        // A power bank or a weak charger reads as AC, but the battery still drains.
+        XCTAssertEqual(HotBagGuard.decide(input(onBattery: false, weakCharger: true, percent: 15)),
+                       .stopAndSleep(.lowBattery(15)))
+        XCTAssertEqual(HotBagGuard.decide(input(onBattery: false, weakCharger: true, percent: 40)), .none)
+        XCTAssertTrue(input(onBattery: false, weakCharger: true).discharging)
+        XCTAssertFalse(input(onBattery: false, weakCharger: false).discharging)
+    }
+
+    func testWeakChargerDoesNotAskForBatteryLowPowerMode() {
+        // `pmset -b lowpowermode` has no effect on AC, even a weak one.
+        XCTAssertEqual(HotBagGuard.decide(input(thermal: .fair, onBattery: false, weakCharger: true)), .none)
+    }
+
+    func testClamshellAtADeskIsNotABag() {
+        XCTAssertEqual(HotBagGuard.decide(input(thermal: .serious, externalDisplay: true)), .none)
+        XCTAssertEqual(HotBagGuard.decide(input(thermal: .critical, externalDisplay: true, onBattery: false)), .none)
+        XCTAssertEqual(HotBagGuard.decide(input(thermal: .fair, externalDisplay: true)), .none)
+    }
+
+    func testLowBatteryStillStopsAtADesk() {
+        XCTAssertEqual(HotBagGuard.decide(input(externalDisplay: true, percent: 10)), .stopAndSleep(.lowBattery(10)))
+    }
+
+    func testSleepNowOnlyWithLidClosedAndNoExternalDisplay() {
+        XCTAssertTrue(HotBagGuard.shouldSleepNow(lidClosed: true, externalDisplay: false))
+        XCTAssertFalse(HotBagGuard.shouldSleepNow(lidClosed: true, externalDisplay: true), "clamshell at a desk")
+        XCTAssertFalse(HotBagGuard.shouldSleepNow(lidClosed: false, externalDisplay: false))
+    }
+
     func testThermalLevelOrderingAndMapping() {
         XCTAssertTrue(ThermalLevel.fair < .serious)
         XCTAssertEqual(ThermalLevel(.nominal), .nominal)
         XCTAssertEqual(ThermalLevel(.fair), .fair)
         XCTAssertEqual(ThermalLevel(.serious), .serious)
         XCTAssertEqual(ThermalLevel(.critical), .critical)
+    }
+}
+
+final class GuardEpisodeTests: XCTestCase {
+    func testStopsOncePerEpisode() {
+        var episode = GuardEpisode()
+        XCTAssertEqual(episode.filter(.stopAndSleep(.hot)), .stopAndSleep(.hot))
+        // Lid-closed mode wouldn't turn off, so the guard still wants to stop: no second notification or sleep-now.
+        XCTAssertEqual(episode.filter(.stopAndSleep(.hot)), .none)
+        XCTAssertEqual(episode.filter(.stopAndSleep(.lowBattery(15))), .none)
+    }
+
+    func testANewEpisodeStartsOnceThereIsNothingToDo() {
+        var episode = GuardEpisode()
+        _ = episode.filter(.stopAndSleep(.hot))
+        XCTAssertEqual(episode.filter(.none), .none)
+        XCTAssertEqual(episode.filter(.stopAndSleep(.hot)), .stopAndSleep(.hot))
+    }
+
+    func testLowPowerPassesThroughAndKeepsTheEpisode() {
+        var episode = GuardEpisode()
+        XCTAssertEqual(episode.filter(.enableLowPower), .enableLowPower)
+        _ = episode.filter(.stopAndSleep(.hot))
+        XCTAssertEqual(episode.filter(.enableLowPower), .enableLowPower)
+        XCTAssertEqual(episode.filter(.stopAndSleep(.hot)), .none)
     }
 }
 

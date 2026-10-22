@@ -5,10 +5,33 @@ import SwiftUI
 struct PanelView: View {
     @ObservedObject var model: AppModel
     var openSettings: () -> Void
+    /// The room on screen below the menu bar; taller content scrolls inside it. Nil: no limit (previews).
+    var maxHeight: CGFloat?
     @Environment(\.frostedGlass) private var frostedGlass
     @State private var copiedSSH = false
 
     var body: some View {
+        // The panel sizes to its content; once that's taller than the screen allows, the same content scrolls.
+        ViewThatFits(in: .vertical) {
+            content
+            ScrollView(.vertical) { content }
+        }
+        .frame(width: 320)
+        .frame(maxHeight: maxHeight)
+        .background(
+            ZStack {
+                if frostedGlass {
+                    FrostedBackground()
+                }
+                Theme.graphite.opacity(frostedGlass ? 0.82 : 1)
+            }
+        )
+        .clipShape(RoundedRectangle(cornerRadius: Theme.panelRadius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.panelRadius, style: .continuous).strokeBorder(Theme.hairline))
+        .environment(\.colorScheme, .dark)
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
             statusLines
@@ -29,12 +52,16 @@ struct PanelView: View {
             .toggleStyle(AwakeSwitchStyle())
             .padding(.horizontal, 6)
             if model.autoHotspot, model.hotspotIsConfigured, model.canJoinHotspotNow {
-                Button("Join \(model.hotspotSSID) now") { Task { await model.joinHotspotNow() } }
-                    .buttonStyle(GhostButtonStyle())
-                    .padding(.horizontal, 6)
+                Button { Task { await model.joinHotspotNow() } } label: {
+                    Text("Join \(model.hotspotSSID) now")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .buttonStyle(GhostButtonStyle())
+                .padding(.horizontal, 6)
             }
-            if !model.otherAwakeApps.isEmpty {
-                Text("Also keeping it awake: \(model.otherAwakeApps.joined(separator: ", "))")
+            if let others = model.otherAwakeAppsLine {
+                Text(others)
                     .font(Theme.body(11))
                     .foregroundStyle(Theme.slate)
                     .fixedSize(horizontal: false, vertical: true)
@@ -43,18 +70,6 @@ struct PanelView: View {
             footer
         }
         .padding(Theme.panelPadding)
-        .frame(width: 320)
-        .background(
-            ZStack {
-                if frostedGlass {
-                    FrostedBackground()
-                }
-                Theme.graphite.opacity(frostedGlass ? 0.82 : 1)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: Theme.panelRadius, style: .continuous))
-        )
-        .overlay(RoundedRectangle(cornerRadius: Theme.panelRadius, style: .continuous).strokeBorder(Theme.hairline))
-        .environment(\.colorScheme, .dark)
     }
 
     private var header: some View {
@@ -82,19 +97,28 @@ struct PanelView: View {
                             .accessibilityLabel("Battery \(percent) percent")
                     }
                 }
-                HStack(spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(model.awakeStatus)
                         .font(Theme.body(11))
                         .foregroundStyle(Theme.slate)
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
-                    if model.power.percent != nil, let detail = model.power.detail {
+                    if model.power.percent != nil, !model.power.chargerTooWeak, let detail = model.power.detail {
                         Text(detail)
                             .font(Theme.body(11))
                             .foregroundStyle(powerNeedsAttention ? Theme.attention : Theme.slate)
                             .monospacedDigit()
                             .fixedSize()
                     }
+                }
+                // A weak charger gets a line of its own, so neither it nor the awake status gets cut short.
+                if model.power.percent != nil, model.power.chargerTooWeak, let detail = model.power.detail {
+                    Text(detail)
+                        .font(Theme.body(11))
+                        .foregroundStyle(Theme.attention)
+                        .monospacedDigit()
+                        .lineLimit(1)
                 }
                 if model.claudeWorking > 0 {
                     Text(model.claudeWorking == 1 ? "1 Claude session working" : "\(model.claudeWorking) Claude sessions working")
@@ -112,7 +136,8 @@ struct PanelView: View {
     /// The network line (home or public) and whether the owner's phone can reach this Mac.
     @ViewBuilder private var statusLines: some View {
         let profile = model.profileStatus
-        let reach = model.reach
+        // Without Tailscale there's nothing to act on, so the line stays out of the panel.
+        let reach = model.reach.flatMap { $0 == .tailscaleMissing ? nil : $0 }
         if profile != nil || reach != nil {
             VStack(alignment: .leading, spacing: 6) {
                 if let profile {
@@ -145,7 +170,7 @@ struct PanelView: View {
         switch reach {
         case .reachable, .untilSleep: copiedSSH ? "Copied" : "Copy SSH"
         case .remoteLoginOff: "Open Settings"
-        case .tailscaleOff: "Open Tailscale"
+        case .tailscaleOff: model.canOpenTailscale ? "Open Tailscale" : nil
         case .tailscaleMissing: nil
         }
     }
@@ -201,11 +226,13 @@ struct PanelView: View {
             }
             FlowLayout(spacing: 6) {
                 ForEach(KeepAwakeOption.chips) { option in
-                    Chip(title: option.title, selected: model.keepAwakeOption == option) {
+                    Chip(title: option.title, spokenTitle: option.spokenTitle, selected: model.keepAwakeOption == option) {
                         model.keepAwakeOption = option
                     }
                 }
             }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Keep awake")
         }
         .padding(.horizontal, 6)
     }
@@ -236,7 +263,7 @@ struct PanelView: View {
     private var hotspotDetail: String? {
         guard model.autoHotspot else { return model.hotspotSSID.isEmpty ? nil : model.hotspotSSID }
         if model.hotspotSSID.isEmpty { return "Choose a hotspot in Settings" }
-        if !model.location.isAuthorized { return "Needs Location access (Settings)" }
+        if !model.location.isAuthorized { return "Needs Location access" }
         return model.isOnHotspot ? "Using \(model.hotspotSSID)" : "Ready · \(model.hotspotSSID)"
     }
 }
