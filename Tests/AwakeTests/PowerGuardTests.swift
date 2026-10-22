@@ -1,5 +1,5 @@
 import XCTest
-@testable import OutpostCore
+@testable import AwakeCore
 
 final class HotBagGuardTests: XCTestCase {
     private func input(thermal: ThermalLevel = .nominal, lidClosed: Bool = true, onBattery: Bool = true,

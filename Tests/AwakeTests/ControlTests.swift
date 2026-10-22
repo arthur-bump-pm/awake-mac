@@ -1,8 +1,8 @@
 import XCTest
-@testable import OutpostCore
+@testable import AwakeCore
 
-private func sampleStatus(onTheMove: Bool = false) -> OutpostStatus {
-    OutpostStatus(onTheMove: onTheMove, keepAwake: onTheMove, keepAwakeMinutesLeft: nil, lidClosedMode: onTheMove,
+private func sampleStatus(onTheMove: Bool = false) -> AwakeStatus {
+    AwakeStatus(onTheMove: onTheMove, keepAwake: onTheMove, keepAwakeMinutesLeft: nil, lidClosedMode: onTheMove,
                   lidClosedModeSetUp: true, autoHotspot: onTheMove, hotspot: "Phone", hotspotReady: true,
                   online: true, wifi: "Home", onHotspot: false, batteryPercent: 80, onBattery: true,
                   summary: onTheMove ? "On the Move is on." : "The Mac sleeps normally.")
@@ -10,7 +10,7 @@ private func sampleStatus(onTheMove: Bool = false) -> OutpostStatus {
 
 final class ControlSocketTests: XCTestCase {
     func testRoundTripOverTheSocket() throws {
-        let path = "/tmp/outpost-test-\(getpid()).sock"
+        let path = "/tmp/awake-test-\(getpid()).sock"
         let server = ControlServer(path: path) { request in
             ControlResponse(ok: true, notes: ["got \(request.command.rawValue) \(request.on ?? false)"],
                             status: sampleStatus(onTheMove: request.on ?? false))
@@ -29,7 +29,7 @@ final class ControlSocketTests: XCTestCase {
     }
 
     func testNothingListeningThrowsConnectError() {
-        XCTAssertThrowsError(try ControlClient.send(ControlRequest(.status), path: "/tmp/outpost-missing-\(getpid()).sock", timeout: 1)) { error in
+        XCTAssertThrowsError(try ControlClient.send(ControlRequest(.status), path: "/tmp/awake-missing-\(getpid()).sock", timeout: 1)) { error in
             guard case ControlSocketError.system(let call, _) = error else { return XCTFail("\(error)") }
             XCTAssertEqual(call, "connect")
         }
@@ -52,7 +52,7 @@ final class MCPHandlerTests: XCTestCase {
         let result = try XCTUnwrap(reply["result"] as? [String: Any])
         XCTAssertEqual(result["protocolVersion"] as? String, "2025-03-26")
         XCTAssertNotNil((result["capabilities"] as? [String: Any])?["tools"])
-        XCTAssertTrue((result["instructions"] as? String ?? "").contains("outpost_on_the_move"))
+        XCTAssertTrue((result["instructions"] as? String ?? "").contains("awake_on_the_move"))
 
         let unknown = try XCTUnwrap(handler().reply(to: ["jsonrpc": "2.0", "id": 2, "method": "initialize",
                                                         "params": ["protocolVersion": "1999-01-01"]]))
@@ -66,7 +66,7 @@ final class MCPHandlerTests: XCTestCase {
     func testToolsListIncludesOnTheMoveWithItsTriggers() throws {
         let reply = try XCTUnwrap(handler().reply(to: ["jsonrpc": "2.0", "id": "a", "method": "tools/list"]))
         let tools = try XCTUnwrap((reply["result"] as? [String: Any])?["tools"] as? [[String: Any]])
-        let move = try XCTUnwrap(tools.first { $0["name"] as? String == "outpost_on_the_move" })
+        let move = try XCTUnwrap(tools.first { $0["name"] as? String == "awake_on_the_move" })
         XCTAssertTrue((move["description"] as? String ?? "").contains("I got to"))
         XCTAssertEqual(reply["id"] as? String, "a")
         for tool in tools {
@@ -77,7 +77,7 @@ final class MCPHandlerTests: XCTestCase {
     func testCallingOnTheMoveSendsMoveOn() throws {
         let reply = try XCTUnwrap(handler().reply(to: [
             "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-            "params": ["name": "outpost_on_the_move", "arguments": ["on": true]],
+            "params": ["name": "awake_on_the_move", "arguments": ["on": true]],
         ]))
         XCTAssertEqual(sent, [ControlRequest(.move, on: true)])
         let result = try XCTUnwrap(reply["result"] as? [String: Any])
@@ -89,14 +89,14 @@ final class MCPHandlerTests: XCTestCase {
     func testTimedKeepAwakeNeedsMinutes() throws {
         let reply = try XCTUnwrap(handler().reply(to: [
             "jsonrpc": "2.0", "id": 4, "method": "tools/call",
-            "params": ["name": "outpost_keep_awake", "arguments": ["mode": "timed"]],
+            "params": ["name": "awake_keep_awake", "arguments": ["mode": "timed"]],
         ]))
         XCTAssertEqual((reply["result"] as? [String: Any])?["isError"] as? Bool, true)
         XCTAssertTrue(sent.isEmpty)
 
         _ = handler().reply(to: [
             "jsonrpc": "2.0", "id": 5, "method": "tools/call",
-            "params": ["name": "outpost_keep_awake", "arguments": ["mode": "timed", "minutes": 90]],
+            "params": ["name": "awake_keep_awake", "arguments": ["mode": "timed", "minutes": 90]],
         ])
         XCTAssertEqual(sent, [ControlRequest(.keepAwake, on: true, minutes: 90)])
     }
@@ -105,20 +105,20 @@ final class MCPHandlerTests: XCTestCase {
         for bad: Any in ["false", 0, NSNull()] {
             let reply = try XCTUnwrap(handler().reply(to: [
                 "jsonrpc": "2.0", "id": 8, "method": "tools/call",
-                "params": ["name": "outpost_on_the_move", "arguments": ["on": bad]],
+                "params": ["name": "awake_on_the_move", "arguments": ["on": bad]],
             ]))
             XCTAssertEqual((reply["result"] as? [String: Any])?["isError"] as? Bool, true)
         }
         XCTAssertTrue(sent.isEmpty, "nothing is switched on a malformed value")
         _ = handler().reply(to: ["jsonrpc": "2.0", "id": 9, "method": "tools/call",
-                                 "params": ["name": "outpost_on_the_move", "arguments": ["on": false]]])
+                                 "params": ["name": "awake_on_the_move", "arguments": ["on": false]]])
         XCTAssertEqual(sent, [ControlRequest(.move, on: false)])
     }
 
     func testHugeMinutesAreRejected() throws {
         let reply = try XCTUnwrap(handler().reply(to: [
             "jsonrpc": "2.0", "id": 10, "method": "tools/call",
-            "params": ["name": "outpost_keep_awake", "arguments": ["mode": "timed", "minutes": Int.max]],
+            "params": ["name": "awake_keep_awake", "arguments": ["mode": "timed", "minutes": Int.max]],
         ]))
         XCTAssertEqual((reply["result"] as? [String: Any])?["isError"] as? Bool, true)
         XCTAssertTrue(sent.isEmpty)
@@ -127,7 +127,7 @@ final class MCPHandlerTests: XCTestCase {
     func testFailedActionIsReportedAsToolError() throws {
         let reply = try XCTUnwrap(handler(ok: false).reply(to: [
             "jsonrpc": "2.0", "id": 6, "method": "tools/call",
-            "params": ["name": "outpost_join_hotspot", "arguments": [:]],
+            "params": ["name": "awake_join_hotspot", "arguments": [:]],
         ]))
         let result = try XCTUnwrap(reply["result"] as? [String: Any])
         XCTAssertEqual(result["isError"] as? Bool, true)

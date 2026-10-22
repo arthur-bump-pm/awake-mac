@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// `Outpost --render-preview <dir>` writes the panel and Settings as PNGs and exits, without
+/// `Awake --render-preview <dir>` writes the panel and Settings as PNGs and exits, without
 /// starting the app or touching any setting. For reviewing the design.
 enum DevPreview {
     @MainActor

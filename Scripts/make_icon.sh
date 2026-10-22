@@ -1,11 +1,11 @@
 #!/bin/bash
-# Regenerates Resources/AppIcon.icns (and a glyph preview) from the shared OutpostMark geometry.
+# Regenerates Resources/AppIcon.icns (and a glyph preview) from the shared AwakeMark geometry.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 WORK=".build/icon"
 rm -rf "$WORK" && mkdir -p "$WORK/AppIcon.iconset"
-swiftc -O Scripts/IconRenderer/main.swift Sources/Outpost/OutpostMark.swift -o "$WORK/render"
+swiftc -O Scripts/IconRenderer/main.swift Sources/Awake/AwakeMark.swift -o "$WORK/render"
 "$WORK/render" "$WORK"
 
 for size in 16 32 128 256 512; do

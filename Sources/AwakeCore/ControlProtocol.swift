@@ -1,6 +1,6 @@
 import Foundation
 
-/// Messages between the Outpost app and `outpostctl` (CLI + MCP server), one JSON object per line
+/// Messages between the Awake app and `awakectl` (CLI + MCP server), one JSON object per line
 /// over a Unix socket that only the current user can open.
 public enum ControlCommand: String, Codable, Sendable {
     case status, move, keepAwake, lidMode, autoHotspot, joinHotspot
@@ -22,7 +22,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
     }
 }
 
-public struct OutpostStatus: Codable, Sendable, Equatable {
+public struct AwakeStatus: Codable, Sendable, Equatable {
     public var onTheMove: Bool
     public var keepAwake: Bool
     public var keepAwakeMinutesLeft: Int?
@@ -30,7 +30,7 @@ public struct OutpostStatus: Codable, Sendable, Equatable {
     public var lidClosedModeSetUp: Bool
     public var autoHotspot: Bool
     public var hotspot: String?
-    /// A hotspot is chosen and macOS lets Outpost see Wi-Fi names.
+    /// A hotspot is chosen and macOS lets Awake see Wi-Fi names.
     public var hotspotReady: Bool
     public var online: Bool?
     public var wifi: String?
@@ -80,9 +80,9 @@ public struct ControlResponse: Codable, Sendable {
     public var error: String?
     /// Things the user should know even though the action went through (e.g. hotspot not chosen yet).
     public var notes: [String]?
-    public var status: OutpostStatus?
+    public var status: AwakeStatus?
 
-    public init(ok: Bool, error: String? = nil, notes: [String]? = nil, status: OutpostStatus? = nil) {
+    public init(ok: Bool, error: String? = nil, notes: [String]? = nil, status: AwakeStatus? = nil) {
         self.ok = ok
         self.error = error
         self.notes = notes
@@ -91,11 +91,11 @@ public struct ControlResponse: Codable, Sendable {
 }
 
 public enum ControlPaths {
-    public static let bundleIdentifier = "io.github.arthur-bump-pm.Outpost"
+    public static let bundleIdentifier = "io.github.arthur-bump-pm.Awake"
 
     public static var directory: URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/Outpost", isDirectory: true)
+            .appendingPathComponent("Library/Application Support/Awake", isDirectory: true)
     }
 
     public static var socket: String {

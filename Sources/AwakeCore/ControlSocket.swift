@@ -10,7 +10,7 @@ public enum ControlSocketError: LocalizedError {
         switch self {
         case .pathTooLong(let path): "Socket path is too long: \(path)"
         case .system(let call, let code): "\(call) failed: \(String(cString: strerror(code)))"
-        case .badResponse: "Outpost sent an unreadable reply."
+        case .badResponse: "Awake sent an unreadable reply."
         }
     }
 }
@@ -21,7 +21,7 @@ public final class ControlServer: @unchecked Sendable {
 
     private let path: String
     private let handler: Handler
-    private let queue = DispatchQueue(label: "Outpost.control")
+    private let queue = DispatchQueue(label: "Awake.control")
     private var listener: Int32 = -1
     private var source: DispatchSourceRead?
 

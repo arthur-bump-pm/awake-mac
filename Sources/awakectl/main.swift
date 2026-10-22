@@ -1,13 +1,13 @@
-// outpostctl: control the Outpost app from a terminal, or serve it to Claude Code over MCP.
+// awakectl: control the Awake app from a terminal, or serve it to Claude Code over MCP.
 import Foundation
-import OutpostCore
+import AwakeCore
 
 let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
 
 let usage = """
-    usage: outpostctl <command>
+    usage: awakectl <command>
 
-      status                    show what Outpost is doing
+      status                    show what Awake is doing
       move on|off               On the Move mode (lid-closed + keep awake + auto-hotspot)
       awake on|off|claude|<minutes>
                                 keep the Mac awake (lid open); "claude" = while Claude works
@@ -15,7 +15,7 @@ let usage = """
       hotspot on|off|join       auto-hotspot, or join the hotspot now
       mcp                       run as an MCP server for Claude Code (stdio)
 
-    Add to Claude Code:  claude mcp add --scope user outpost -- "\(CommandLine.arguments[0])" mcp
+    Add to Claude Code:  claude mcp add --scope user awake -- "\(CommandLine.arguments[0])" mcp
     """
 
 /// Sends a request, launching the app first if it isn't running.
@@ -101,6 +101,6 @@ do {
     }
     exit(response.ok ? 0 : 1)
 } catch {
-    FileHandle.standardError.write(Data("outpostctl: couldn't reach Outpost: \(error.localizedDescription)\n".utf8))
+    FileHandle.standardError.write(Data("awakectl: couldn't reach Awake: \(error.localizedDescription)\n".utf8))
     exit(1)
 }

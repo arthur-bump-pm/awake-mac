@@ -2,7 +2,7 @@ import AppKit
 import CoreText
 import SwiftUI
 
-/// Outpost's design tokens, adapted from the Dimension style on Refero: a void-black canvas,
+/// Awake's design tokens, adapted from the Dimension style on Refero: a void-black canvas,
 /// graphite surfaces, 1px hairlines, white as the only "on" color, DM Sans for UI text and Geist for titles.
 enum Theme {
     static let void = Color(hex: 0x0a0a0a)
@@ -58,7 +58,7 @@ extension Color {
 
 /// A switch with a visible track: white when on (graphite knob), dark gray when off.
 /// `onLight` inverts it for use on the white On the Move card.
-struct OutpostSwitchStyle: ToggleStyle {
+struct AwakeSwitchStyle: ToggleStyle {
     var onLight = false
 
     func makeBody(configuration: Configuration) -> some View {

@@ -1,4 +1,4 @@
-import OutpostCore
+import AwakeCore
 import SwiftUI
 
 struct SettingsView: View {
@@ -24,7 +24,7 @@ struct SettingsContent: View {
     }
 
     private var mcpCommand: String {
-        "claude mcp add --scope user outpost -- \(Bundle.main.bundlePath)/Contents/MacOS/outpostctl mcp"
+        "claude mcp add --scope user awake -- \(Bundle.main.bundlePath)/Contents/MacOS/awakectl mcp"
     }
 
     var body: some View {
@@ -34,7 +34,7 @@ struct SettingsContent: View {
                         .resizable()
                         .frame(width: 48, height: 48)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Outpost")
+                        Text("Awake")
                             .font(Theme.title(24, weight: .semibold))
                             .foregroundStyle(Theme.bone)
                         Text("Your laptop, always on. Wherever you work.")
@@ -65,7 +65,7 @@ struct SettingsContent: View {
                     Toggle("Suggest it when I leave my desk", isOn: $model.deskSuggestions)
                 }
 
-                Card("Permission", footer: "Lets Outpost switch lid-closed mode, Low Power Mode, sleep and the firewall without asking each time. Nothing else.") {
+                Card("Permission", footer: "Lets Awake switch lid-closed mode, Low Power Mode, sleep and the firewall without asking each time. Nothing else.") {
                     HStack {
                         Text("Admin permission")
                             .font(Theme.body(13))
@@ -138,12 +138,12 @@ struct SettingsContent: View {
                     .buttonStyle(GhostButtonStyle())
                 }
 
-                Text("Outpost \(version) · Built on Insomnia by Karan Sangha · Fonts: DM Sans, Geist (OFL)")
+                Text("Awake \(version) · Built on Insomnia by Karan Sangha · Fonts: DM Sans, Geist (OFL)")
                     .font(Theme.body(11))
                     .foregroundStyle(Theme.slate)
                     .frame(maxWidth: .infinity)
             }
-            .toggleStyle(OutpostSwitchStyle())
+            .toggleStyle(AwakeSwitchStyle())
             .font(Theme.body(13))
             .foregroundStyle(Theme.bone)
             .padding(.horizontal, 28)

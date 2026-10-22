@@ -1,6 +1,6 @@
 import XCTest
 import IOKit.pwr_mgt
-@testable import OutpostCore
+@testable import AwakeCore
 
 private final class ThreadSafeAssertionManager: PowerAssertionManaging, @unchecked Sendable {
     private let lock = NSLock()

@@ -1,5 +1,5 @@
 import XCTest
-@testable import OutpostCore
+@testable import AwakeCore
 
 private final class FirewallRunner: CommandRunning, @unchecked Sendable {
     var state: FirewallState

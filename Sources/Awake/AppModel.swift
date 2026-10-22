@@ -1,7 +1,7 @@
 import AppKit
 import Combine
 import Network
-import OutpostCore
+import AwakeCore
 import ServiceManagement
 
 enum KeepAwakeOption: Hashable, Identifiable {
@@ -144,13 +144,13 @@ final class AppModel: ObservableObject {
         static let moveLowPower = "moveLowPower"
         static let moveShield = "moveShield"
         static let deskSuggestions = "deskSuggestions"
-        static let lidModeSetByOutpost = "lidModeSetByOutpost"
+        static let lidModeSetByAwake = "lidModeSetByAwake"
         static let lowPowerSetByGuard = "lowPowerSetByGuard"
         static let didRegisterLoginItem = "didRegisterLoginItem"
     }
 
     /// What On the Move changed, so "back at desk" can put it back. Optional fields are only
-    /// set for settings Outpost actually changed.
+    /// set for settings Awake actually changed.
     private struct MoveSnapshot: Codable {
         enum KeepAwake: Codable, Equatable {
             case off, indefinitely, whileClaudeWorks
@@ -224,13 +224,13 @@ final class AppModel: ObservableObject {
             try server.start()
             controlServer = server
         } catch {
-            NSLog("Outpost: control socket unavailable: \(error.localizedDescription)")
+            NSLog("Awake: control socket unavailable: \(error.localizedDescription)")
         }
 
         pathMonitor.pathUpdateHandler = { [weak self] _ in
             Task { @MainActor in self?.checkSoon() }
         }
-        pathMonitor.start(queue: DispatchQueue(label: "Outpost.path"))
+        pathMonitor.start(queue: DispatchQueue(label: "Awake.path"))
 
         loopTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -250,7 +250,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Puts back what Outpost changed. Runs synchronously: the app is about to exit.
+    /// Puts back what Awake changed. Runs synchronously: the app is about to exit.
     func shutdown() {
         controlServer?.stop()
         if onTheMove {
@@ -265,9 +265,9 @@ final class AppModel: ObservableObject {
             defaults.set(false, forKey: Keys.lowPowerSetByGuard)
         }
         keepAwake.deactivate()
-        if lidMode.isEnabled, defaults.bool(forKey: Keys.lidModeSetByOutpost) {
+        if lidMode.isEnabled, defaults.bool(forKey: Keys.lidModeSetByAwake) {
             try? lidMode.setEnabled(false)
-            defaults.set(false, forKey: Keys.lidModeSetByOutpost)
+            defaults.set(false, forKey: Keys.lidModeSetByAwake)
         }
     }
 
@@ -325,8 +325,8 @@ final class AppModel: ObservableObject {
         if let url = portalURL {
             alerts.append(PanelAlert(kind: .signIn(url), message: "This Wi-Fi wants you to sign in.", action: "Sign In"))
         }
-        if lidMode.isEnabled, !defaults.bool(forKey: Keys.lidModeSetByOutpost) {
-            alerts.append(PanelAlert(kind: .foreignLidMode, message: "Lid-closed mode was turned on outside Outpost.", action: "Turn Off"))
+        if lidMode.isEnabled, !defaults.bool(forKey: Keys.lidModeSetByAwake) {
+            alerts.append(PanelAlert(kind: .foreignLidMode, message: "Lid-closed mode was turned on outside Awake.", action: "Turn Off"))
         }
         switch deskNudge {
         case .left? where !onTheMove:
@@ -361,7 +361,7 @@ final class AppModel: ObservableObject {
         return rest == 0 ? "\(hours) hr" : "\(hours) hr \(rest) min"
     }
 
-    func status() -> OutpostStatus {
+    func status() -> AwakeStatus {
         let battery = PowerSource.batteryLevel()
         let onBattery = PowerSource.isOnBattery()
         var sentences: [String] = []
@@ -392,7 +392,7 @@ final class AppModel: ObservableObject {
         if let battery {
             sentences.append("Battery \(battery)%\(onBattery ? "" : ", on power").")
         }
-        return OutpostStatus(
+        return AwakeStatus(
             onTheMove: onTheMove, keepAwake: keepAwake.isActive,
             keepAwakeMinutesLeft: keepAwake.remainingTime.map { Int(($0 / 60).rounded(.up)) },
             lidClosedMode: lidMode.isEnabled, lidClosedModeSetUp: lidMode.isSetUp,
@@ -403,7 +403,7 @@ final class AppModel: ObservableObject {
             atDesk: atDesk, summary: sentences.joined(separator: " "))
     }
 
-    // MARK: - Control (outpostctl / MCP)
+    // MARK: - Control (awakectl / MCP)
 
     func handle(_ request: ControlRequest) async -> ControlResponse {
         var notes: [String] = []
@@ -435,7 +435,7 @@ final class AppModel: ObservableObject {
                 notes.append(problem)
             }
         case .joinHotspot:
-            failure = hotspotSSID.isEmpty ? "No hotspot is chosen yet (Outpost Settings)." : await joinHotspotNow()
+            failure = hotspotSSID.isEmpty ? "No hotspot is chosen yet (Awake Settings)." : await joinHotspotNow()
         }
         return ControlResponse(ok: failure == nil, error: failure, notes: notes.isEmpty ? nil : notes, status: status())
     }
@@ -615,7 +615,7 @@ final class AppModel: ObservableObject {
                 try await lidMode.setUp()
             }
             try lidMode.setEnabled(enabled)
-            defaults.set(enabled, forKey: Keys.lidModeSetByOutpost)
+            defaults.set(enabled, forKey: Keys.lidModeSetByAwake)
             return nil
         } catch LidModeError.setUpCancelled {
             return "the password prompt was cancelled"
@@ -635,7 +635,7 @@ final class AppModel: ObservableObject {
             try await lidMode.setUp()
         } catch LidModeError.setUpCancelled {
         } catch {
-            Self.showAlert("Couldn't set up Outpost's permission", error.localizedDescription)
+            Self.showAlert("Couldn't set up Awake's permission", error.localizedDescription)
         }
     }
 
@@ -651,7 +651,7 @@ final class AppModel: ObservableObject {
                     try SMAppService.mainApp.unregister()
                 }
             } catch {
-                NSLog("Outpost: launch at login change failed: \(error)")
+                NSLog("Awake: launch at login change failed: \(error)")
             }
             objectWillChange.send()
         }
@@ -662,8 +662,8 @@ final class AppModel: ObservableObject {
     var hotspotIsConfigured: Bool { hotspotSetupProblem == nil }
 
     var hotspotSetupProblem: String? {
-        if hotspotSSID.isEmpty { return "Auto-hotspot has no hotspot chosen yet: pick one in Outpost Settings." }
-        if !location.isAuthorized { return "Outpost needs Location access to see Wi-Fi names: allow it in Outpost Settings." }
+        if hotspotSSID.isEmpty { return "Auto-hotspot has no hotspot chosen yet: pick one in Awake Settings." }
+        if !location.isAuthorized { return "Awake needs Location access to see Wi-Fi names: allow it in Awake Settings." }
         return nil
     }
 
@@ -726,7 +726,7 @@ final class AppModel: ObservableObject {
             if !portalNotified {
                 portalNotified = true
                 Notifier.post(title: "This Wi-Fi wants you to sign in",
-                              body: "Outpost will wait before switching to your hotspot.", category: .signIn)
+                              body: "Awake will wait before switching to your hotspot.", category: .signIn)
             }
         case .offline:
             portalNotified = false
@@ -764,7 +764,7 @@ final class AppModel: ObservableObject {
             let hint = if case WiFiError.notFound = failure {
                 "It isn't nearby. On your iPhone, turn on Personal Hotspot → Allow Others to Join."
             } else {
-                "Check the hotspot password in Outpost Settings."
+                "Check the hotspot password in Awake Settings."
             }
             if automatic, !joinFailureNotified {
                 joinFailureNotified = true
@@ -805,7 +805,7 @@ final class AppModel: ObservableObject {
         }.value
         engine.returnAttempted(success: success, now: .now)
         if success {
-            Notifier.post(title: "Back on \(home)", body: "Outpost left the hotspot to save your phone's data.")
+            Notifier.post(title: "Back on \(home)", body: "Awake left the hotspot to save your phone's data.")
         }
         wifi = await Task.detached { wifiControl.state() }.value
     }
@@ -866,7 +866,7 @@ final class AppModel: ObservableObject {
             }
         } else if keepAwakeWhileClaudeWorks, claudeFinished {
             keepAwakeOption = .off
-            Notifier.post(title: "Claude finished", body: "Outpost stopped keeping your Mac awake.")
+            Notifier.post(title: "Claude finished", body: "Awake stopped keeping your Mac awake.")
         }
     }
 
@@ -900,7 +900,7 @@ final class AppModel: ObservableObject {
             if ok {
                 defaults.set(true, forKey: Keys.lowPowerSetByGuard)
                 lowPowerOnBattery = true
-                Notifier.post(title: "Your Mac is getting warm", body: "Outpost turned on Low Power Mode to cool it down.")
+                Notifier.post(title: "Your Mac is getting warm", body: "Awake turned on Low Power Mode to cool it down.")
             }
         case .stopAndSleep(let reason):
             if onTheMove {
@@ -912,9 +912,9 @@ final class AppModel: ObservableObject {
             }
             switch reason {
             case .hot:
-                Notifier.post(title: "Your Mac got hot", body: "Outpost turned everything off so it can sleep and cool down.")
+                Notifier.post(title: "Your Mac got hot", body: "Awake turned everything off so it can sleep and cool down.")
             case .lowBattery(let percent):
-                Notifier.post(title: "Battery at \(percent)%", body: "Outpost turned everything off so your Mac can sleep.")
+                Notifier.post(title: "Battery at \(percent)%", body: "Awake turned everything off so your Mac can sleep.")
             }
             sleepIfLidClosed()
         }

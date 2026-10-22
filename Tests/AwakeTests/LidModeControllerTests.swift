@@ -1,5 +1,5 @@
 import XCTest
-@testable import OutpostCore
+@testable import AwakeCore
 
 final class MockRunner: CommandRunning, @unchecked Sendable {
     var sleepDisabled = false
@@ -24,7 +24,7 @@ final class MockRunner: CommandRunning, @unchecked Sendable {
 @MainActor
 final class LidModeControllerTests: XCTestCase {
     private func defaults(version: Int) -> UserDefaults {
-        let suite = UserDefaults(suiteName: "outpost-tests-\(UUID().uuidString)")!
+        let suite = UserDefaults(suiteName: "awake-tests-\(UUID().uuidString)")!
         suite.set(version, forKey: "privilegedRuleVersion")
         return suite
     }
@@ -86,6 +86,7 @@ final class LidModeControllerTests: XCTestCase {
         XCTAssertLessThan(validate.lowerBound, install.lowerBound)
         XCTAssertTrue(script.hasPrefix("set -e"))
         XCTAssertTrue(script.contains(LidModeController.sudoersPath))
+        XCTAssertTrue(script.hasSuffix("/bin/rm -f /etc/sudoers.d/outpost"), "the old Outpost rule is removed")
     }
 
     func testAppleScriptEscapesQuotesAndBackslashes() {

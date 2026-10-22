@@ -2,31 +2,31 @@
 import PackageDescription
 
 let package = Package(
-    name: "Outpost",
+    name: "Awake",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "Outpost", targets: ["Outpost"]),
-        .executable(name: "outpostctl", targets: ["outpostctl"]),
-        .library(name: "OutpostCore", targets: ["OutpostCore"])
+        .executable(name: "Awake", targets: ["Awake"]),
+        .executable(name: "awakectl", targets: ["awakectl"]),
+        .library(name: "AwakeCore", targets: ["AwakeCore"])
     ],
     targets: [
         .target(
-            name: "OutpostCore"
+            name: "AwakeCore"
         ),
         .executableTarget(
-            name: "Outpost",
-            dependencies: ["OutpostCore"],
+            name: "Awake",
+            dependencies: ["AwakeCore"],
             exclude: ["Info.plist"]
         ),
         .executableTarget(
-            name: "outpostctl",
-            dependencies: ["OutpostCore"]
+            name: "awakectl",
+            dependencies: ["AwakeCore"]
         ),
         .testTarget(
-            name: "OutpostTests",
-            dependencies: ["OutpostCore"]
+            name: "AwakeTests",
+            dependencies: ["AwakeCore"]
         )
     ]
 )

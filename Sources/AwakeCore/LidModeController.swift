@@ -19,7 +19,9 @@ public enum LidModeError: LocalizedError, Equatable {
 /// `allowedCommands` without a password (lid mode, Low Power Mode, sleep now, firewall).
 @MainActor
 public final class LidModeController: ObservableObject {
-    public nonisolated static let sudoersPath = "/etc/sudoers.d/outpost"
+    public nonisolated static let sudoersPath = "/etc/sudoers.d/awake"
+    /// The rule this app installed under its earlier name, Outpost; removed when the new one goes in.
+    public nonisolated static let legacySudoersPath = "/etc/sudoers.d/outpost"
 
     /// Bump whenever `allowedCommands` changes, so existing installs are asked to set up again.
     public nonisolated static let ruleVersion = 2
@@ -105,12 +107,13 @@ public final class LidModeController: ObservableObject {
     public nonisolated static func installScript(rule: String) -> String {
         """
         set -e
-        tmp=$(/usr/bin/mktemp /tmp/outpost-sudoers.XXXXXX)
+        tmp=$(/usr/bin/mktemp /tmp/awake-sudoers.XXXXXX)
         /usr/bin/printf '%s' '\(rule)' > "$tmp"
         /usr/sbin/visudo -cf "$tmp" >/dev/null
         /usr/sbin/chown root:wheel "$tmp"
         /bin/chmod 0440 "$tmp"
         /bin/mv -f "$tmp" \(sudoersPath)
+        /bin/rm -f \(legacySudoersPath)
         """
     }
 
@@ -118,6 +121,6 @@ public final class LidModeController: ObservableObject {
         let escaped = shellScript
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
-        return "do shell script \"\(escaped)\" with prompt \"Outpost needs your password once, to keep your Mac running with the lid closed and to switch power and firewall settings while you're on the move.\" with administrator privileges"
+        return "do shell script \"\(escaped)\" with prompt \"Awake needs your password once, to keep your Mac running with the lid closed and to switch power and firewall settings while you're on the move.\" with administrator privileges"
     }
 }

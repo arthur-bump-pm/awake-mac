@@ -3,7 +3,7 @@ import Security
 
 /// The hotspot's Wi-Fi password, kept in the login keychain.
 public enum HotspotPasswordStore {
-    private static let service = "Outpost Hotspot"
+    private static let service = "Awake Hotspot"
     private static let account = "hotspot"
 
     private static var query: [String: Any] {

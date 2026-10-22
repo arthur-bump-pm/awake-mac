@@ -1,5 +1,5 @@
 import XCTest
-@testable import OutpostCore
+@testable import AwakeCore
 
 final class DeskDetectorTests: XCTestCase {
     private let desk = DeskState(externalDisplay: true, onPower: true)

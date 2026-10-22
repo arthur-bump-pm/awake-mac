@@ -1,5 +1,5 @@
 import XCTest
-@testable import OutpostCore
+@testable import AwakeCore
 
 final class StubURLProtocol: URLProtocol {
     struct Reply {

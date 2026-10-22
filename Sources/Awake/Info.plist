@@ -5,17 +5,17 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>Outpost</string>
+	<string>Awake</string>
 	<key>CFBundleExecutable</key>
-	<string>Outpost</string>
+	<string>Awake</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
-	<string>io.github.arthur-bump-pm.Outpost</string>
+	<string>io.github.arthur-bump-pm.Awake</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Outpost</string>
+	<string>Awake</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -42,8 +42,8 @@
 	<key>NSHumanReadableCopyright</key>
 	<string>MIT License. Built on Insomnia © 2018 Karanvir Singh Sangha.</string>
 	<key>NSLocationUsageDescription</key>
-	<string>Outpost reads Wi-Fi network names so it can tell when you're on your hotspot. It never uses your location.</string>
+	<string>Awake reads Wi-Fi network names so it can tell when you're on your hotspot. It never uses your location.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Outpost reads Wi-Fi network names so it can tell when you're on your hotspot. It never uses your location.</string>
+	<string>Awake reads Wi-Fi network names so it can tell when you're on your hotspot. It never uses your location.</string>
 </dict>
 </plist>

@@ -4,7 +4,7 @@ import UserNotifications
 
 @main
 @MainActor
-enum OutpostMain {
+enum AwakeMain {
     static func main() {
         DevPreview.runIfRequested()
         let delegate = AppDelegate()
@@ -35,7 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         AppModel.shared.shutdown()
     }
 
-    /// Never shown (Outpost has no menu bar of its own), but it routes ⌘C/⌘V/⌘A, ⌘W and ⌘Q in Settings.
+    /// Never shown (Awake has no menu bar of its own), but it routes ⌘C/⌘V/⌘A, ⌘W and ⌘Q in Settings.
     private static func mainMenu() -> NSMenu {
         let main = NSMenu()
         func submenu(_ title: String, _ items: [NSMenuItem]) {
@@ -45,7 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             item.submenu = menu
             main.addItem(item)
         }
-        submenu("Outpost", [NSMenuItem(title: "Quit Outpost", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")])
+        submenu("Awake", [NSMenuItem(title: "Quit Awake", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")])
         let redo = NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
         redo.keyEquivalentModifierMask = [.command, .shift]
         submenu("Edit", [
@@ -85,19 +85,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 }
 
 enum MenuBarIcon {
-    private static var cache: [OutpostMark.GlyphState: NSImage] = [:]
+    private static var cache: [AwakeMark.GlyphState: NSImage] = [:]
 
-    static func image(for state: OutpostMark.GlyphState) -> NSImage {
+    static func image(for state: AwakeMark.GlyphState) -> NSImage {
         if let image = cache[state] { return image }
         let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { rect in
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
             ctx.setFillColor(.black)
             ctx.setStrokeColor(.black)
-            OutpostMark.drawGlyph(in: ctx, rect: rect, state: state)
+            AwakeMark.drawGlyph(in: ctx, rect: rect, state: state)
             return true
         }
         image.isTemplate = true
-        image.accessibilityDescription = "Outpost"
+        image.accessibilityDescription = "Awake"
         cache[state] = image
         return image
     }

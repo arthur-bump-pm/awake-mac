@@ -26,7 +26,7 @@ public final class KeepAwakeController: ObservableObject {
     private var assertionID: IOPMAssertionID = 0
     private var timer: Timer?
     private var endDate: Date?
-    private let reason = "Outpost - Keep Awake" as CFString
+    private let reason = "Awake - Keep Awake" as CFString
 
     public init(assertionManager: PowerAssertionManaging = LivePowerAssertionManager(), allowDisplaySleep: Bool = false) {
         self.assertionManager = assertionManager

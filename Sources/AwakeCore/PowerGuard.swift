@@ -81,7 +81,7 @@ public enum PrivilegedCommandError: LocalizedError, Equatable {
         switch self {
         case .notPermitted(let output):
             let detail = output.trimmingCharacters(in: .whitespacesAndNewlines)
-            return detail.isEmpty ? "Outpost isn't allowed to run this command." : detail
+            return detail.isEmpty ? "Awake isn't allowed to run this command." : detail
         }
     }
 }

@@ -1,6 +1,6 @@
 import XCTest
 import IOKit.pwr_mgt
-@testable import OutpostCore
+@testable import AwakeCore
 
 final class MockPowerAssertionManager: PowerAssertionManaging {
     private(set) var createdTypes: [String] = []

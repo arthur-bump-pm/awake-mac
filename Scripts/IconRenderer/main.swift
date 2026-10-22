@@ -1,6 +1,6 @@
-// Renders Outpost's app icon (1024px PNG) and a menu bar glyph preview.
-// Built together with Sources/Outpost/OutpostMark.swift by Scripts/make_icon.sh.
-// Style: Dimension (Refero) — glossy void-black tile, soft white form, faint dusk-violet rim.
+// Renders Awake's app icon ("Mochi", awake state, 1024px PNG) and a menu bar glyph preview.
+// Built together with Sources/Awake/AwakeMark.swift by Scripts/make_icon.sh.
+// Style: Dimension (Refero) — glossy void-black tile, soft white eyes, faint dusk-violet rim.
 import AppKit
 
 let outDir = CommandLine.arguments.dropFirst().first ?? "."
@@ -41,13 +41,60 @@ func squircle(_ rect: CGRect, n: CGFloat = 5) -> CGPath {
     return path
 }
 
-func pill(_ r: CGRect) -> CGPath {
-    CGPath(roundedRect: r, cornerWidth: r.height / 2, cornerHeight: r.height / 2, transform: nil)
-}
-
 let edges: CGGradientDrawingOptions = [.drawsBeforeStartLocation, .drawsAfterEndLocation]
 
-func drawIcon(_ ctx: CGContext, tile tileRect: CGRect) {
+/// Soft white volume: glow, top-lit gradient, an inner shadow that rounds the bottom edge, and
+/// optionally the faint shade of an upper lid. `path` must be one simple closed outline.
+func fillSoftWhite(_ ctx: CGContext, _ path: CGPath, s: CGFloat, glow: CGFloat = 0.17, lidShade: Bool = false) {
+    let box = path.boundingBox
+    ctx.saveGState()
+    ctx.setShadow(offset: .zero, blur: 70 * s, color: gray(255, glow))
+    ctx.addPath(path)
+    ctx.setFillColor(gray(240))
+    ctx.fillPath()
+    ctx.restoreGState()
+
+    ctx.saveGState()
+    ctx.addPath(path)
+    ctx.clip()
+    ctx.drawLinearGradient(gradient([gray(255), gray(247), gray(212)], [0, 0.45, 1]),
+                           start: CGPoint(x: box.midX, y: box.maxY), end: CGPoint(x: box.midX, y: box.minY), options: edges)
+    let outside = CGMutablePath()
+    outside.addRect(box.insetBy(dx: -80 * s, dy: -80 * s))
+    outside.addPath(path)
+    ctx.setShadow(offset: CGSize(width: 0, height: 9 * s), blur: 16 * s, color: gray(110, 0.34))
+    ctx.addPath(outside)
+    ctx.setFillColor(gray(0))
+    ctx.fillPath(using: .evenOdd)
+    if lidShade {
+        ctx.setShadow(offset: CGSize(width: 0, height: -10 * s), blur: 22 * s, color: gray(60, 0.30))
+        ctx.addPath(outside)
+        ctx.fillPath(using: .evenOdd)
+    }
+    ctx.restoreGState()
+}
+
+func drawPupil(_ ctx: CGContext, center c: CGPoint, radius r: CGFloat, clip eye: CGPath) {
+    ctx.saveGState()
+    ctx.addPath(eye)
+    ctx.clip()
+    ctx.addEllipse(in: AwakeMark.circle(c, r))
+    ctx.clip()
+    // A deep glossy bead: darkest at the top (under the lid), a whisper of bounce light at the bottom.
+    ctx.drawLinearGradient(gradient([gray(4), gray(10), gray(30)], [0, 0.6, 1]),
+                           start: CGPoint(x: c.x, y: c.y + r), end: CGPoint(x: c.x, y: c.y - r), options: edges)
+    ctx.restoreGState()
+
+    // Catchlights: one big soft sparkle up-left, one small one down-right.
+    let big = CGPoint(x: c.x - 0.30 * r, y: c.y + 0.30 * r)
+    ctx.drawRadialGradient(gradient([gray(255, 1), gray(255, 0.97), gray(255, 0)], [0, 0.8, 1]),
+                           startCenter: big, startRadius: 0, endCenter: big, endRadius: 0.31 * r, options: [])
+    let small = CGPoint(x: c.x + 0.40 * r, y: c.y - 0.36 * r)
+    ctx.drawRadialGradient(gradient([gray(255, 0.92), gray(255, 0.85), gray(255, 0)], [0, 0.65, 1]),
+                           startCenter: small, startRadius: 0, endCenter: small, endRadius: 0.13 * r, options: [])
+}
+
+func drawTile(_ ctx: CGContext, _ tileRect: CGRect) {
     let s = tileRect.width / 824
     let tile = squircle(tileRect)
     let top = CGPoint(x: tileRect.midX, y: tileRect.maxY)
@@ -84,57 +131,45 @@ func drawIcon(_ ctx: CGContext, tile tileRect: CGRect) {
                            start: top, end: bottom, options: edges)
     ctx.endTransparencyLayer()
 
-    // Soft gloss at the top.
+    // Soft gloss at the top: the dome of the forehead.
     ctx.saveGState()
     ctx.translateBy(x: tileRect.midX, y: tileRect.maxY - 60 * s)
     ctx.scaleBy(x: 1.6, y: 0.75)
     ctx.drawRadialGradient(gradient([gray(255, 0.085), gray(255, 0.03), gray(255, 0)], [0, 0.5, 1]),
                            startCenter: .zero, startRadius: 0, endCenter: .zero, endRadius: 330 * s, options: edges)
     ctx.restoreGState()
-
-    // The eye: a glowing white pill with volume.
-    let eye = OutpostMark.pillRect(in: tileRect)
-    let eyePath = pill(eye)
-    ctx.saveGState()
-    ctx.setShadow(offset: .zero, blur: 80 * s, color: gray(255, 0.18))
-    ctx.addPath(eyePath)
-    ctx.setFillColor(gray(240))
-    ctx.fillPath()
     ctx.restoreGState()
+}
 
-    ctx.saveGState()
-    ctx.addPath(eyePath)
-    ctx.clip()
-    ctx.drawLinearGradient(gradient([gray(255), gray(246), gray(214)], [0, 0.45, 1]),
-                           start: CGPoint(x: eye.midX, y: eye.maxY), end: CGPoint(x: eye.midX, y: eye.minY), options: edges)
-    ctx.setShadow(offset: CGSize(width: 0, height: 10 * s), blur: 18 * s, color: gray(120, 0.35))
-    let outside = CGMutablePath()
-    outside.addRect(eye.insetBy(dx: -60 * s, dy: -60 * s))
-    outside.addPath(eyePath)
-    ctx.addPath(outside)
-    ctx.setFillColor(gray(0))
-    ctx.fillPath(using: .evenOdd)
-    ctx.restoreGState()
-
-    // Pupil, glancing forward, with a soft catchlight.
-    let center = OutpostMark.pupilCenter(in: tileRect)
-    let radius = OutpostMark.pupilRadius * tileRect.width
-    ctx.saveGState()
-    ctx.addEllipse(in: OutpostMark.circle(center, radius))
-    ctx.clip()
-    ctx.drawLinearGradient(gradient([gray(34), gray(10)], [0, 1]),
-                           start: CGPoint(x: center.x, y: center.y + radius), end: CGPoint(x: center.x, y: center.y - radius), options: edges)
-    ctx.restoreGState()
-    let highlight = CGPoint(x: center.x - 0.36 * radius, y: center.y + 0.36 * radius)
-    ctx.drawRadialGradient(gradient([gray(255, 0.9), gray(255, 0.75), gray(255, 0)], [0, 0.55, 1]),
-                           startCenter: highlight, startRadius: 0, endCenter: highlight, endRadius: 0.22 * radius, options: [])
-    ctx.restoreGState()
-
-    // Dimension's hairline edge.
+func drawHairline(_ ctx: CGContext, _ tileRect: CGRect) {
+    let s = tileRect.width / 824
     ctx.addPath(squircle(tileRect.insetBy(dx: s, dy: s)))
     ctx.setStrokeColor(gray(255, 0.09))
     ctx.setLineWidth(2 * s)
     ctx.strokePath()
+}
+
+func drawIcon(_ ctx: CGContext, tile tileRect: CGRect) {
+    let s = tileRect.width / 824
+    let w = tileRect.width
+    drawTile(ctx, tileRect)
+
+    ctx.saveGState()
+    ctx.addPath(squircle(tileRect))
+    ctx.clip()
+
+    let f = AwakeMark.face
+    let ew = f.eyeWidth * w, eh = f.eyeHeight * w
+    for (i, c) in f.eyeCenters(tileRect).enumerated() {
+        let side: CGFloat = i == 0 ? -1 : 1
+        let eye = AwakeMark.eyePath(center: c, width: ew, height: eh, n: f.eyeN, flare: f.eyeFlare)
+        fillSoftWhite(ctx, eye, s: s, lidShade: true)
+        let r = f.pupilRadius * w
+        let pc = CGPoint(x: c.x - side * f.pupilInset * w, y: c.y + eh / 2 - f.pupilTopGap * w - r)
+        drawPupil(ctx, center: pc, radius: r, clip: eye)
+    }
+    ctx.restoreGState()
+    drawHairline(ctx, tileRect)
 }
 
 render(width: 1024, height: 1024, to: "icon_1024.png") { ctx in
@@ -143,7 +178,7 @@ render(width: 1024, height: 1024, to: "icon_1024.png") { ctx in
 
 // Menu bar glyph: asleep / awake / on the move, large and at true retina size, on light and dark bars.
 render(width: 1020, height: 420, to: "glyph_preview.png") { ctx in
-    let states: [OutpostMark.GlyphState] = [.asleep, .awake, .moving]
+    let states: [AwakeMark.GlyphState] = [.asleep, .awake, .moving]
     for (row, dark) in [true, false].enumerated() {
         let y = CGFloat(row) * 210
         ctx.setFillColor(dark ? srgb(36, 36, 40) : srgb(236, 236, 238))
@@ -152,8 +187,8 @@ render(width: 1020, height: 420, to: "glyph_preview.png") { ctx in
             let x = 30 + CGFloat(i) * 330
             ctx.setFillColor(dark ? gray(255) : gray(0))
             ctx.setStrokeColor(dark ? gray(255) : gray(0))
-            OutpostMark.drawGlyph(in: ctx, rect: CGRect(x: x, y: y + 25, width: 160, height: 160), state: state)
-            OutpostMark.drawGlyph(in: ctx, rect: CGRect(x: x + 200, y: y + 87, width: 36, height: 36), state: state)
+            AwakeMark.drawGlyph(in: ctx, rect: CGRect(x: x, y: y + 25, width: 160, height: 160), state: state)
+            AwakeMark.drawGlyph(in: ctx, rect: CGRect(x: x + 200, y: y + 87, width: 36, height: 36), state: state)
         }
     }
 }

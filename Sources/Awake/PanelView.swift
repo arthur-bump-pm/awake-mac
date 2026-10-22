@@ -1,4 +1,4 @@
-import OutpostCore
+import AwakeCore
 import SwiftUI
 
 /// The menu bar panel: status, On the Move, keep awake, the two switches, and a footer.
@@ -24,7 +24,7 @@ struct PanelView: View {
                     RowLabel(title: "Auto-hotspot", detail: hotspotDetail)
                 }
             }
-            .toggleStyle(OutpostSwitchStyle())
+            .toggleStyle(AwakeSwitchStyle())
             .padding(.horizontal, 6)
             if model.autoHotspot, model.hotspotIsConfigured, model.canJoinHotspotNow {
                 Button("Join \(model.hotspotSSID) now") { Task { await model.joinHotspotNow() } }
@@ -105,7 +105,7 @@ struct PanelView: View {
                     .foregroundStyle(Color(hex: 0x686868))
             }
         }
-        .toggleStyle(OutpostSwitchStyle(onLight: true))
+        .toggleStyle(AwakeSwitchStyle(onLight: true))
         .padding(.vertical, 12)
         .padding(.leading, 14)
         .padding(.trailing, 12)
@@ -143,7 +143,7 @@ struct PanelView: View {
                 .buttonStyle(GhostButtonStyle())
                 .keyboardShortcut(",")
             Spacer()
-            Button("Quit Outpost") { model.quit() }
+            Button("Quit Awake") { model.quit() }
                 .buttonStyle(GhostButtonStyle())
                 .keyboardShortcut("q")
         }

@@ -25,11 +25,11 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         panel.delegate = self
         panel.onCancel = { [weak self] in self?.close() }
 
-        statusItem.autosaveName = "Outpost"
+        statusItem.autosaveName = "Awake"
         if let button = statusItem.button {
             button.target = self
             button.action = #selector(toggle)
-            button.setAccessibilityLabel("Outpost")
+            button.setAccessibilityLabel("Awake")
         }
         updateIcon()
         changes = model.objectWillChange
@@ -82,7 +82,7 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
     }
 
     private func updateIcon() {
-        let state: OutpostMark.GlyphState = model.onTheMove ? .moving : model.isKeepingAwake ? .awake : .asleep
+        let state: AwakeMark.GlyphState = model.onTheMove ? .moving : model.isKeepingAwake ? .awake : .asleep
         statusItem.button?.image = MenuBarIcon.image(for: state)
     }
 }
@@ -123,7 +123,7 @@ final class SettingsWindowController {
     func show() {
         if window == nil {
             let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(model: model)))
-            window.title = "Outpost Settings"
+            window.title = "Awake Settings"
             window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
