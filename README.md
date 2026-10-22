@@ -35,8 +35,8 @@
 Awake is built from source for now (Xcode command-line tools required):
 
 ```bash
-git clone https://github.com/arthur-bump-pm/awake.git
-cd awake
+git clone https://github.com/arthur-bump-pm/awake-mac.git
+cd awake-mac
 ./build_app.sh --install
 ```
 
