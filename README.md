@@ -32,7 +32,7 @@ cd outpost
 ./build_app.sh --install
 ```
 
-Outpost appears in the menu bar as an eye: closed when your Mac sleeps normally, open while it's kept awake, and open with motion lines while you're On the Move. If you use a menu bar manager (Hidden Bar, Bartender, Ice), drag Outpost's icon to the visible side.
+Outpost appears in the menu bar as its icon's pill-shaped eye: dimmed when your Mac sleeps normally, bright while it's kept awake, and with motion lines while you're On the Move. If you use a menu bar manager (Hidden Bar, Bartender, Ice), drag Outpost's icon to the visible side.
 
 ### Connect Claude Code
 

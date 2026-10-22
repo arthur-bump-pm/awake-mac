@@ -2,10 +2,10 @@ import CoreGraphics
 import Foundation
 
 /// Outpost's mark: one wide white eye, looking ahead. The app icon draws it as a glossy pill
-/// (Scripts/IconRenderer); the menu bar draws a lens-shaped eye that stays readable at 18 pt.
+/// (Scripts/IconRenderer) and the menu bar draws the same pill as a template glyph.
 enum OutpostMark {
     enum GlyphState {
-        /// The Mac sleeps normally: a closed eye.
+        /// The Mac sleeps normally: the eye, dimmed.
         case asleep
         /// Something is keeping the Mac awake.
         case awake
@@ -31,69 +31,35 @@ enum OutpostMark {
         return CGPoint(x: pill.minX + pill.width * pupilAt, y: pill.midY)
     }
 
-    /// Menu bar template glyph in the context's current color, drawn as one layer so dimming
-    /// doesn't show seams where strokes overlap.
+    /// Menu bar template glyph in the context's current color: the app icon's pill eye, drawn as one
+    /// layer so dimming doesn't show seams. Dimmed when asleep; shorter with motion lines when moving.
     static func drawGlyph(in ctx: CGContext, rect: CGRect, state: GlyphState) {
-        let k = rect.width / 18
+        let u = rect.width / 18
         ctx.saveGState()
-        ctx.setAlpha(state == .asleep ? 0.55 : 1)
+        ctx.setAlpha(state == .asleep ? 0.45 : 1)
         ctx.beginTransparencyLayer(auxiliaryInfo: nil)
         defer {
             ctx.endTransparencyLayer()
             ctx.restoreGState()
         }
-        ctx.setLineCap(.round)
-        ctx.setLineJoin(.round)
 
-        let shift: CGFloat = state == .moving ? 2.2 * k : 0
-        let eye = CGRect(x: rect.minX + 1.6 * k + shift, y: rect.midY - 3.1 * k, width: 14.8 * k - shift, height: 6.2 * k)
+        let height = 8 * u
+        let moving = state == .moving
+        let pill = CGRect(x: rect.minX + (moving ? 5.5 : 1) * u, y: rect.midY - height / 2,
+                          width: (moving ? 11.5 : 16) * u, height: height)
+        let eye = CGMutablePath()
+        eye.addRoundedRect(in: pill, cornerWidth: height / 2, cornerHeight: height / 2)
+        eye.addEllipse(in: circle(CGPoint(x: pill.minX + pill.width * 0.64, y: pill.midY), 1.75 * u))
+        ctx.addPath(eye)
+        ctx.fillPath(using: .evenOdd)
 
-        guard state != .asleep else {
-            let lid = CGMutablePath()
-            lid.move(to: CGPoint(x: eye.minX, y: eye.midY + 0.6 * k))
-            lid.addCurve(to: CGPoint(x: eye.maxX, y: eye.midY + 0.6 * k),
-                         control1: CGPoint(x: eye.minX + eye.width * 0.3, y: eye.midY - 2.6 * k),
-                         control2: CGPoint(x: eye.maxX - eye.width * 0.3, y: eye.midY - 2.6 * k))
-            ctx.addPath(lid)
-            ctx.setLineWidth(1.6 * k)
-            ctx.strokePath()
-            for (at, lean) in [(0.3, -0.6), (0.5, 0.0), (0.7, 0.6)] as [(CGFloat, CGFloat)] {
-                let base = CGPoint(x: eye.minX + eye.width * at, y: eye.midY - 1.35 * k)
-                ctx.move(to: base)
-                ctx.addLine(to: CGPoint(x: base.x + lean * k, y: base.y - 2 * k))
-            }
-            ctx.setLineWidth(1.3 * k)
-            ctx.strokePath()
-            return
+        guard moving else { return }
+        let line = 1.5 * u
+        for (x, y, width) in [(0.5, 1.6, 3.6), (1.7, -1.6, 2.4)] as [(CGFloat, CGFloat, CGFloat)] {
+            let speed = CGRect(x: rect.minX + x * u, y: rect.midY + y * u - line / 2, width: width * u, height: line)
+            ctx.addPath(CGPath(roundedRect: speed, cornerWidth: line / 2, cornerHeight: line / 2, transform: nil))
         }
-
-        ctx.addPath(lens(eye))
-        ctx.setLineWidth(1.55 * k)
-        ctx.strokePath()
-        ctx.fillEllipse(in: circle(CGPoint(x: eye.minX + eye.width * 0.6, y: eye.midY), 2.35 * k))
-
-        if state == .moving {
-            ctx.move(to: CGPoint(x: rect.minX + 0.7 * k, y: rect.midY + 1.5 * k))
-            ctx.addLine(to: CGPoint(x: rect.minX + 2.4 * k, y: rect.midY + 1.5 * k))
-            ctx.move(to: CGPoint(x: rect.minX + 0.7 * k, y: rect.midY - 1.5 * k))
-            ctx.addLine(to: CGPoint(x: rect.minX + 2 * k, y: rect.midY - 1.5 * k))
-            ctx.setLineWidth(1.4 * k)
-            ctx.strokePath()
-        }
-    }
-
-    /// An eye outline: two curves meeting at the corners.
-    static func lens(_ r: CGRect) -> CGPath {
-        let path = CGMutablePath()
-        let left = CGPoint(x: r.minX, y: r.midY), right = CGPoint(x: r.maxX, y: r.midY)
-        let bulge = r.height * 0.275
-        path.move(to: left)
-        path.addCurve(to: right, control1: CGPoint(x: r.minX + r.width * 0.28, y: r.maxY + bulge),
-                      control2: CGPoint(x: r.maxX - r.width * 0.28, y: r.maxY + bulge))
-        path.addCurve(to: left, control1: CGPoint(x: r.maxX - r.width * 0.28, y: r.minY - bulge),
-                      control2: CGPoint(x: r.minX + r.width * 0.28, y: r.minY - bulge))
-        path.closeSubpath()
-        return path
+        ctx.fillPath()
     }
 
     static func circle(_ center: CGPoint, _ radius: CGFloat) -> CGRect {
