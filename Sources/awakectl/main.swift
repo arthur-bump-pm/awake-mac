@@ -11,7 +11,10 @@ let usage = """
       move on|off               On the Move mode (lid-closed + keep awake + auto-hotspot)
       awake on|off|claude|<minutes>
                                 keep the Mac awake (lid open); "claude" = while Claude works
-      lid on|off                lid-closed mode
+      overnight on|off|claude|always
+                                keep running with the lid closed: until the morning hour in
+                                Settings, until Claude finishes, or until turned off
+      lid on|off                lid-closed mode (on = overnight always)
       hotspot on|off|join       auto-hotspot, or join the hotspot now
       mcp                       run as an MCP server for Claude Code (stdio)
 
@@ -76,6 +79,12 @@ case ("awake", let word?) where onOff(word) != nil:
     request = ControlRequest(.keepAwake, on: onOff(word))
 case ("awake", let word?) where Int(word).map { (1...10_080).contains($0) } == true:
     request = ControlRequest(.keepAwake, on: true, minutes: Int(word))
+case ("overnight", "claude"):
+    request = ControlRequest(.overnight, on: true, end: .whenClaudeFinishes)
+case ("overnight", "always"):
+    request = ControlRequest(.overnight, on: true, end: .manually)
+case ("overnight", let word?) where onOff(word) != nil:
+    request = ControlRequest(.overnight, on: onOff(word))
 case ("lid", let word?) where onOff(word) != nil:
     request = ControlRequest(.lidMode, on: onOff(word))
 case ("hotspot", "join"):

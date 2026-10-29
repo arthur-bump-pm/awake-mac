@@ -10,7 +10,8 @@ enum KeepAwakeOption: Hashable, Identifiable {
     case minutes(Int)
     case whileClaudeWorks
 
-    static let chips: [KeepAwakeOption] = [.off, .minutes(60), .minutes(240), .indefinitely, .whileClaudeWorks]
+    /// The panel's choices under Keep awake; Off is a mode of its own.
+    static let chips: [KeepAwakeOption] = [.minutes(60), .minutes(240), .indefinitely, .whileClaudeWorks]
 
     var id: Self { self }
 
@@ -27,6 +28,51 @@ enum KeepAwakeOption: Hashable, Identifiable {
     var spokenTitle: String {
         if case .minutes(let m) = self { return TimeText.spoken(minutes: m) }
         return title
+    }
+
+    /// For the settings store: minutes, or a negative code.
+    var stored: Int {
+        switch self {
+        case .off: 0
+        case .indefinitely: -1
+        case .whileClaudeWorks: -2
+        case .minutes(let m): m
+        }
+    }
+
+    init(stored: Int) {
+        switch stored {
+        case -2: self = .whileClaudeWorks
+        case 1...: self = .minutes(stored)
+        default: self = .indefinitely
+        }
+    }
+}
+
+/// What the panel offers: one way of staying awake at a time.
+enum AwakeMode: CaseIterable, Identifiable {
+    case off, keepAwake, overnight, onTheMove
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .off: "Off"
+        case .keepAwake: "Keep awake"
+        case .overnight: "Overnight"
+        case .onTheMove: "On the Move"
+        }
+    }
+}
+
+extension OvernightEnd {
+    /// Mid-sentence form, e.g. "until Claude finishes"; the morning hour is the session's own time.
+    var phrase: String {
+        switch self {
+        case .morning: "in the morning"
+        case .whenClaudeFinishes: "when Claude finishes"
+        case .manually: "when you turn it off"
+        }
     }
 }
 
@@ -60,18 +106,23 @@ enum MoveEnd: String, CaseIterable, Identifiable {
 struct PanelAlert: Identifiable, Equatable {
     enum Kind: Equatable {
         case signIn(URL)
-        case foreignLidMode
+        /// Lid-closed mode is on with no mode using it: set elsewhere, or a turn-off that failed.
+        case lidModeLeftOn
         case leftDesk
         case backAtDesk
         case sharing
         case locationAccess
-        /// The last lid-closed mode, permission or On the Move action from the panel failed.
+        /// The last lid-closed mode, permission, Overnight or On the Move action from the panel failed.
         case actionFailed
+        case weakCharger
+        case joinHotspot
+        case health(HealthWarning.Kind)
     }
 
     let kind: Kind
     let message: String
-    let action: String
+    /// The button's title; nil for a warning with nothing to press.
+    let action: String?
     var id: String { message }
 }
 
@@ -113,6 +164,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var reachChecked = false
     @Published private(set) var power: PowerReading
     @Published private(set) var nearbyNetworks: [String] = []
+    /// The user's shortcuts, for Settings to pick from; read when Settings opens.
+    @Published private(set) var installedShortcuts: [String] = []
     @Published private(set) var otherAwakeApps: [String] = []
     @Published private(set) var claudeWorking = 0
     @Published private(set) var keepAwakeWhileClaudeWorks = false
@@ -126,9 +179,35 @@ final class AppModel: ObservableObject {
     /// Why the last lid-closed mode, permission or On the Move action from the panel didn't fully work, until it's
     /// dismissed or a later one works. Shown in the panel too, since notifications may be off.
     @Published private(set) var lastFailure: String?
+    /// Health warnings now (empty while they're turned off in Settings), and the busiest process once the CPU warning
+    /// starts.
+    @Published private(set) var healthWarnings: [HealthWarning] = []
+    /// Mode changes queued or running (see `modeStep`).
+    @Published private(set) var pendingModeSteps = 0
+    @Published private(set) var busyProcess: String?
 
     @Published private(set) var onTheMove: Bool {
         didSet { defaults.set(onTheMove, forKey: Keys.onTheMove) }
+    }
+    /// The Overnight session, persisted so a crash or relaunch picks it up again.
+    @Published private(set) var overnight: OvernightSession? {
+        didSet { defaults.set(overnight.flatMap { try? JSONEncoder().encode($0) }, forKey: Keys.overnight) }
+    }
+    @Published var overnightEnd: OvernightEnd {
+        didSet { defaults.set(overnightEnd.rawValue, forKey: Keys.overnightEnd) }
+    }
+    @Published var overnightHour: Int {
+        didSet { defaults.set(overnightHour, forKey: Keys.overnightHour) }
+    }
+    @Published var healthWarningsOn: Bool {
+        didSet {
+            defaults.set(healthWarningsOn, forKey: Keys.healthWarnings)
+            // Turned on: start over, so what's wrong now gets its notification.
+            if healthWarningsOn, !oldValue {
+                healthWatch = HealthWatch(cores: ProcessInfo.processInfo.activeProcessorCount)
+            }
+            showHealthWarnings()
+        }
     }
     @Published var autoHotspot: Bool {
         didSet {
@@ -220,6 +299,11 @@ final class AppModel: ObservableObject {
         static let outletWarningMinutes = "outletWarningMinutes"
         static let firewallShield = "firewallShield"
         static let lastProfile = "lastProfile"
+        static let overnight = "overnight"
+        static let overnightEnd = "overnightEnd"
+        static let overnightHour = "overnightHour"
+        static let healthWarnings = "healthWarnings"
+        static let lastKeepAwake = "lastKeepAwake"
     }
 
     /// What On the Move changed, so "back at desk" can put it back. Optional fields are only
@@ -255,6 +339,7 @@ final class AppModel: ObservableObject {
     private let tailscaleCLI = TailscaleCLI()
     private let sharingCheck = SharingCheck()
     private var powerAlerts = PowerAlerts()
+    private var healthWatch = HealthWatch(cores: ProcessInfo.processInfo.activeProcessorCount)
     /// The last definite profile, held through short moments without a Wi-Fi name (waking, roaming) so the shield
     /// doesn't drop and come back; lapses after 10 minutes of unknown or when Wi-Fi is off. Starts unknown at launch.
     private var profileHold = ProfileHold()
@@ -292,6 +377,7 @@ final class AppModel: ObservableObject {
     private var lowPowerOnBattery: Bool?
     /// On the Move switches one transition at a time, so a start and an end can't interleave across awaits.
     private var moveTransition: Task<[String], Never>?
+    private var modeTransition: Task<Void, Never>?
     private var previewLaunchAtLogin = false
     private var cancellables = Set<AnyCancellable>()
 
@@ -318,8 +404,16 @@ final class AppModel: ObservableObject {
         }
         defaults.register(defaults: [Keys.returnToWiFi: true, Keys.safety: true, Keys.moveLowPower: true,
                                      Keys.moveShield: true, Keys.deskSuggestions: true, Keys.publicShield: true,
-                                     Keys.outletWarningMinutes: PowerAlerts.defaultWarning])
+                                     Keys.outletWarningMinutes: PowerAlerts.defaultWarning, Keys.healthWarnings: true,
+                                     Keys.overnightHour: OvernightSession.defaultMorningHour,
+                                     Keys.lastKeepAwake: KeepAwakeOption.indefinitely.stored])
         onTheMove = defaults.bool(forKey: Keys.onTheMove)
+        overnight = defaults.data(forKey: Keys.overnight)
+            .flatMap { try? JSONDecoder().decode(OvernightSession.self, from: $0) }
+        overnightEnd = OvernightEnd(rawValue: defaults.string(forKey: Keys.overnightEnd) ?? "") ?? .morning
+        let hour = defaults.integer(forKey: Keys.overnightHour)
+        overnightHour = OvernightSession.morningChoices.contains(hour) ? hour : OvernightSession.defaultMorningHour
+        healthWarningsOn = defaults.bool(forKey: Keys.healthWarnings)
         autoHotspot = defaults.bool(forKey: Keys.autoHotspot)
         hotspotSSID = defaults.string(forKey: Keys.hotspotSSID) ?? ""
         returnToWiFi = defaults.bool(forKey: Keys.returnToWiFi)
@@ -372,6 +466,7 @@ final class AppModel: ObservableObject {
             // A snapshot without On the Move: a crash cut an end short before it put everything back.
             finishInterruptedMoveEnd()
         }
+        resumeOvernight()
         Task { await loadHotspotPassword() }
 
         pathMonitor.pathUpdateHandler = { [weak self] _ in
@@ -389,6 +484,7 @@ final class AppModel: ObservableObject {
 
         refreshAwakeWatch()
         refreshPower()
+        refreshHealth(disk: true)
         refreshReach(sharing: true)
         refreshFirewall()
         // Common modes, so the tick keeps running while a menu or a control is tracking the mouse.
@@ -410,6 +506,8 @@ final class AppModel: ObservableObject {
         controlServer?.stop()
         isQuitting = true
         lidMode.refreshNow()
+        // Quitting ends Overnight like any other mode; lid-closed mode goes off below if Awake turned it on.
+        overnight = nil
         if onTheMove {
             let snapshot = loadSnapshot()
             Self.restorePrivileged(snapshot, lowPower: lowPower)
@@ -442,6 +540,7 @@ final class AppModel: ObservableObject {
         Task { await lidMode.refresh() }
         refreshAwakeWatch()
         refreshPower()
+        refreshHealth(disk: true)
         refreshReach(sharing: true)
         refreshFirewall()
         checkSoon()
@@ -453,12 +552,22 @@ final class AppModel: ObservableObject {
 
     var isKeepingAwake: Bool { keepAwake.isActive || lidMode.isEnabled }
 
-    /// Awake itself keeps the Mac awake (On the Move, keep-awake or lid-closed mode); the menu bar eyes are open.
-    var isAwakeOn: Bool { onTheMove || isKeepingAwake }
+    /// Awake itself keeps the Mac awake (On the Move, Overnight, keep-awake or lid-closed mode); the menu bar eyes
+    /// are open.
+    var isAwakeOn: Bool { onTheMove || overnight != nil || isKeepingAwake }
+
+    /// The panel's mode. Lid-closed mode left on by something else isn't a mode: the panel warns about it instead.
+    var mode: AwakeMode {
+        if onTheMove { return .onTheMove }
+        if overnight != nil { return .overnight }
+        if keepAwake.isActive { return .keepAwake }
+        return .off
+    }
 
     /// The menu bar item's state, for VoiceOver and its tooltip.
     var menuBarStatus: String {
         if onTheMove { return "On the Move" }
+        if let overnight { return "Overnight: running with the lid closed too, \(overnightPhrase(overnight))" }
         if lidMode.isEnabled { return "Keeping your Mac awake, lid closed too" }
         if keepAwake.isActive {
             return keepAwakeWhileClaudeWorks ? "Keeping your Mac awake while Claude works" : "Keeping your Mac awake"
@@ -495,13 +604,55 @@ final class AppModel: ObservableObject {
         }
     }
 
-    var awakeStatus: String {
-        if lidMode.isEnabled { return "Stays on with the lid closed" }
-        if keepAwakeWhileClaudeWorks { return "Awake while Claude works" }
-        if keepAwake.isActive {
-            return keepAwake.remainingTime.map { "Awake for \(Self.format($0))" } ?? "Keeping your Mac awake"
+    /// "until 9:00 AM", "until Claude finishes" or "until you turn it off".
+    func overnightPhrase(_ session: OvernightSession) -> String {
+        switch session.end {
+        case .morning: session.until.map { "until \($0.formatted(date: .omitted, time: .shortened))" } ?? "until morning"
+        case .whenClaudeFinishes: "until Claude finishes"
+        case .manually: "until you turn it off"
         }
-        return "Awake is off"
+    }
+
+    /// For the status: "at 9:00 AM", "when Claude finishes" or "when turned off".
+    private func overnightEndsText(_ session: OvernightSession) -> String {
+        switch session.end {
+        case .morning: session.until.map { "at \($0.formatted(date: .omitted, time: .shortened))" } ?? "in the morning"
+        case .whenClaudeFinishes: "when Claude finishes"
+        case .manually: "when turned off"
+        }
+    }
+
+    /// The second line of a mode in the panel: what it does, or for the mode that's on, how it's going.
+    func modeDetail(_ mode: AwakeMode) -> String {
+        let on = self.mode == mode
+        switch mode {
+        case .off:
+            guard on, !otherAwakeApps.isEmpty else { return "Sleeps as usual" }
+            return "\(otherAwakeApps.joined(separator: ", ")) \(otherAwakeApps.count == 1 ? "keeps" : "keep") it awake anyway"
+        case .keepAwake:
+            guard on else { return "Lid open" }
+            if keepAwakeWhileClaudeWorks { return "Lid open · while Claude works" }
+            return "Lid open · " + (keepAwake.remainingTime.map { "\(Self.format($0)) left" } ?? "until you turn it off")
+        case .overnight:
+            if on, let overnight { return "Lid closed is fine · \(overnightPhrase(overnight))" }
+            return lidMode.isSetUp ? "Lid closed is fine · for long jobs" : "Lid closed is fine · asks for your password once"
+        case .onTheMove:
+            return on ? "Lid closed, hotspot · ends \(moveEnd.phrase)" : "Lid closed, hotspot, Low Power Mode"
+        }
+    }
+
+    /// The panel's second header line: the network's profile and Claude's sessions, or nil.
+    var panelDetail: String? {
+        var parts: [String] = []
+        switch profile {
+        case .public: parts.append(isShielded ? "Public Wi-Fi · shielded" : publicShield ? "Public Wi-Fi · not shielded" : "Public Wi-Fi")
+        case .home: if isShielded { parts.append("Firewall shield on") }
+        case .unknown: if isShielded { parts.append("Firewall shield on") }
+        }
+        if claudeWorking > 0 {
+            parts.append(claudeWorking == 1 ? "1 Claude session working" : "\(claudeWorking) Claude sessions working")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     /// The shield is up and the firewall, as last read, really is shielded (the user can switch it off behind it).
@@ -571,12 +722,25 @@ final class AppModel: ObservableObject {
             alerts.append(PanelAlert(kind: .locationAccess, message: locationProblem + ".",
                                      action: location.isDenied ? "Open Settings" : "Allow"))
         }
+        if connectivity == .offline, hotspotIsConfigured, canJoinHotspotNow {
+            alerts.append(PanelAlert(kind: .joinHotspot, message: "No internet. Your hotspot, \(hotspotSSID), can take over.",
+                                     action: "Join"))
+        }
         if let lastFailure {
             alerts.append(PanelAlert(kind: .actionFailed, message: lastFailure, action: "OK"))
         }
-        if lidMode.isEnabled, !defaults.bool(forKey: Keys.lidModeSetByAwake) {
-            alerts.append(PanelAlert(kind: .foreignLidMode, message: "Lid-closed mode was turned on outside Awake.", action: "Turn Off"))
+        // While Overnight or On the Move keeps the Mac running anyway, a stray lid-closed mode changes nothing; while a
+        // mode is switching, lid-closed mode can be on a moment before its mode is.
+        if lidMode.isEnabled, !onTheMove, overnight == nil, pendingModeSteps == 0 {
+            let message = defaults.bool(forKey: Keys.lidModeSetByAwake) ? "Lid-closed mode is still on, so your Mac won't sleep."
+                                                                          : "Lid-closed mode was turned on outside Awake."
+            alerts.append(PanelAlert(kind: .lidModeLeftOn, message: message, action: "Turn Off"))
         }
+        if power.percent != nil, power.chargerTooWeak {
+            let charger = power.adapterWatts.map { "Charger too weak (\($0) W)" } ?? "Charger too weak"
+            alerts.append(PanelAlert(kind: .weakCharger, message: "\(charger): the battery is still draining.", action: nil))
+        }
+        alerts += healthWarnings.map(healthAlert)
         switch deskNudge {
         case .left? where !onTheMove:
             alerts.append(PanelAlert(kind: .leftDesk, message: "Leaving your desk? Keep Claude running with the lid closed.", action: "On the Move"))
@@ -592,21 +756,57 @@ final class AppModel: ObservableObject {
         switch alert.kind {
         case .signIn(let url):
             NSWorkspace.shared.open(url)
-        case .foreignLidMode:
-            await setLidModeFromMenu(false)
+        case .lidModeLeftOn:
+            // Queued like the modes, and only while still stray: a mode that took it over meanwhile keeps it.
+            await modeStep {
+                guard self.lidMode.isEnabled, !self.onTheMove, self.overnight == nil else { return }
+                await self.setLidModeFromMenu(false)
+            }
         case .leftDesk:
             deskNudge = nil
-            await setOnTheMoveFromMenu(true)
+            await setModeFromMenu(.onTheMove)
         case .backAtDesk:
             deskNudge = nil
-            await setOnTheMoveFromMenu(false)
+            await endMoveFromMenu()
         case .sharing:
             NSWorkspace.shared.open(Self.sharingSettingsURL)
         case .locationAccess:
             location.request()
         case .actionFailed:
             lastFailure = nil
+        case .joinHotspot:
+            await joinHotspotNow()
+        case .weakCharger:
+            break
+        case .health(.disk):
+            NSWorkspace.shared.open(Self.storageSettingsURL)
+        case .health(.memory), .health(.cpu):
+            NSWorkspace.shared.open(Self.activityMonitorURL)
         }
+    }
+
+    static let storageSettingsURL = URL(string: "x-apple.systempreferences:com.apple.settings.Storage")!
+    static let activityMonitorURL = URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app")
+
+    private func healthAlert(_ warning: HealthWarning) -> PanelAlert {
+        switch warning {
+        case .diskAlmostFull(let free):
+            return PanelAlert(kind: .health(.disk), message: "Disk almost full: \(Self.bytes(free)) free. Builds and downloads can fail.",
+                              action: "Open Storage")
+        case .lowMemory(let critical):
+            return PanelAlert(kind: .health(.memory),
+                              message: critical ? "Memory is very low: macOS may quit apps." : "Memory is low, so apps and Claude slow down.",
+                              action: "Activity Monitor")
+        case .busyCPU:
+            let who = busyProcess.map { ", mostly \($0)" } ?? ""
+            return PanelAlert(kind: .health(.cpu), message: "The CPU has been busy on battery for 10 min\(who), so it drains faster.",
+                              action: "Activity Monitor")
+        }
+    }
+
+    /// "8.2 GB", as Finder counts.
+    nonisolated static func bytes(_ count: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: count, countStyle: .file)
     }
 
     nonisolated static func format(_ seconds: TimeInterval) -> String {
@@ -620,7 +820,9 @@ final class AppModel: ObservableObject {
         if onTheMove {
             sentences.append("On the Move is on and ends \(moveEnd.phrase).")
         }
-        if lidMode.isEnabled {
+        if let overnight {
+            sentences.append("Overnight is on: the Mac keeps running with the lid closed \(overnightPhrase(overnight)).")
+        } else if lidMode.isEnabled {
             sentences.append("The Mac keeps running with the lid closed.")
         } else if keepAwakeWhileClaudeWorks {
             sentences.append("The Mac stays awake while Claude works (lid open).")
@@ -658,6 +860,8 @@ final class AppModel: ObservableObject {
         if let reach {
             sentences.append(reach.sentence)
         }
+        let warnings = healthWarnings.map { healthAlert($0).message }
+        sentences += warnings
         let hasBattery = power.percent != nil
         return AwakeStatus(
             onTheMove: onTheMove, keepAwake: keepAwake.isActive,
@@ -670,7 +874,12 @@ final class AppModel: ObservableObject {
             atDesk: atDesk, networkProfile: profile, firewallShield: isShielded,
             batteryMinutesLeft: power.minutesLeft, chargerWatts: power.adapterWatts,
             chargerTooWeak: hasBattery && power.externalConnected ? power.chargerTooWeak : nil,
-            reachable: reach?.isReachable, reach: reach?.text, summary: sentences.joined(separator: " "))
+            reachable: reach?.isReachable, reach: reach?.text, overnight: overnight != nil,
+            overnightEnds: overnight.map(overnightEndsText),
+            diskFreeGB: healthWatch.diskFreeBytes.map { (Double($0) / 1e8).rounded() / 10 },
+            memoryPressure: healthWatch.memory?.name,
+            cpuPercent: healthWatch.recentBusyCores.map { Int(($0 / Double(healthWatch.cores) * 100).rounded()) },
+            warnings: warnings.isEmpty ? nil : warnings, summary: sentences.joined(separator: " "))
     }
 
     // MARK: - Control (awakectl / MCP)
@@ -686,22 +895,46 @@ final class AppModel: ObservableObject {
         switch request.command {
         case .status:
             break
+        // One mode at a time, as in the panel: On the Move and keep-awake take over from Overnight, and the other way
+        // round (see `startOvernight`). Keep-awake off leaves Overnight on: it wasn't asked to stop.
         case .move:
-            notes = await setOnTheMove(request.on == true)
-            if request.on == true { claudeHasWorked() }
+            let on = request.on == true
+            notes = await modeStep {
+                let ended = on ? await self.endOvernight() : nil
+                return (ended.map { [$0] } ?? []) + (await self.setOnTheMove(on))
+            }
+            if on { claudeHasWorked() }
         case .keepAwake:
-            if request.on == false {
-                keepAwakeOption = .off
+            let option: KeepAwakeOption = if request.on == false {
+                .off
             } else if request.whileClaudeWorks == true {
-                keepAwakeOption = .whileClaudeWorks
+                .whileClaudeWorks
             } else if let minutes = request.minutes {
-                keepAwakeOption = .minutes(minutes)
+                .minutes(minutes)
             } else {
-                keepAwakeOption = .indefinitely
+                .indefinitely
+            }
+            failure = await modeStep {
+                let problem = option == .off ? nil : await self.endOvernight()
+                self.keepAwakeOption = option
+                return problem
             }
             if request.on == true { claudeHasWorked() }
         case .lidMode:
-            failure = await lidModeProblem(request.on == true)
+            // Lid-closed mode on its own is Overnight that ends only when turned off. Off also turns off lid-closed mode
+            // that something else turned on: it was asked for.
+            let on = request.on == true
+            failure = await modeStep {
+                if on {
+                    return self.onTheMove ? await self.lidModeProblem(true) : await self.startOvernight(end: .manually)
+                }
+                self.overnight = nil
+                return await self.lidModeProblem(false)
+            }
+        case .overnight:
+            let on = request.on == true
+            failure = await modeStep { await self.setOvernight(on, end: request.end) }
+            if on, failure == nil { claudeHasWorked() }
         case .autoHotspot:
             autoHotspot = request.on == true
             if autoHotspot, let problem = hotspotSetupProblem {
@@ -711,6 +944,164 @@ final class AppModel: ObservableObject {
             failure = hotspotSSID.isEmpty ? "No hotspot is chosen yet: pick one in Awake Settings." : await joinHotspotNow()
         }
         return ControlResponse(ok: failure == nil, error: failure, notes: notes.isEmpty ? nil : notes, status: status())
+    }
+
+    // MARK: - Modes
+
+    /// The panel's mode list: one mode at a time. Leaving On the Move first puts back what it changed; a failure shows
+    /// in the panel (and a notification), like the other actions from the menu.
+    func setModeFromMenu(_ mode: AwakeMode) async {
+        await modeStep { await self.switchMode(to: mode) }
+    }
+
+    /// "Back at your desk" (an alert or a notification): ends On the Move and puts back what was there before, unlike
+    /// picking Off.
+    func endMoveFromMenu() async {
+        await modeStep { await self.setOnTheMoveFromMenu(false) }
+    }
+
+    /// Mode changes (the panel, awakectl, MCP, the timed ends) run one at a time, each deciding from the state when it
+    /// runs: a tap made while an earlier one waits on the password prompt applies after it, not halfway through.
+    private func modeStep<T: Sendable>(_ work: @escaping @MainActor () async -> T) async -> T {
+        let previous = modeTransition
+        pendingModeSteps += 1
+        let step = Task { @MainActor () -> T in
+            await previous?.value
+            return await work()
+        }
+        modeTransition = Task { _ = await step.value }
+        let result = await step.value
+        pendingModeSteps -= 1
+        return result
+    }
+
+    private func switchMode(to mode: AwakeMode) async {
+        guard mode != self.mode else { return }
+        switch mode {
+        case .onTheMove:
+            if let problem = await endOvernight() {
+                return reportFailure(problem, title: "Couldn't end Overnight")
+            }
+            await setOnTheMoveFromMenu(true)
+        case .overnight:
+            await setOvernightFromMenu(true)
+        case .off, .keepAwake:
+            if onTheMove {
+                await setOnTheMoveFromMenu(false)
+            }
+            if let problem = await endOvernight() {
+                return reportFailure(problem, title: "Couldn't end Overnight")
+            }
+            keepAwakeOption = mode == .off ? .off : lastKeepAwake
+        }
+    }
+
+    /// The Keep awake choice last made in the panel; picking Keep awake again starts with it.
+    var lastKeepAwake: KeepAwakeOption {
+        KeepAwakeOption(stored: defaults.integer(forKey: Keys.lastKeepAwake))
+    }
+
+    /// A chip under Keep awake. Queued like the modes: tapped while another mode is still switching on, it wins.
+    func chooseKeepAwake(_ option: KeepAwakeOption) async {
+        await modeStep {
+            self.defaults.set(option.stored, forKey: Keys.lastKeepAwake)
+            if self.mode == .keepAwake {
+                self.keepAwakeOption = option
+            } else {
+                await self.switchMode(to: .keepAwake)
+            }
+        }
+    }
+
+    private func reportFailure(_ problem: String, title: String) {
+        guard problem != Self.setUpCancelled else { return }
+        lastFailure = "\(title). \(problem)"
+        Notifier.post(title: title, body: problem)
+    }
+
+    // MARK: - Overnight
+
+    /// Starts Overnight (ending On the Move or keep-awake first) or ends it. Returns a problem, as a sentence, or nil.
+    func setOvernight(_ on: Bool, end: OvernightEnd? = nil) async -> String? {
+        on ? await startOvernight(end: end ?? overnightEnd) : await endOvernight()
+    }
+
+    func setOvernightFromMenu(_ on: Bool) async {
+        if let problem = await setOvernight(on) {
+            reportFailure(problem, title: on ? "Couldn't start Overnight" : "Couldn't end Overnight")
+        } else {
+            lastFailure = nil
+        }
+    }
+
+    /// The one-time password prompt comes first, so cancelling it changes nothing (On the Move stays on). Lid-closed
+    /// mode then goes on before keep-awake goes off. Starting again while on only sets the new end.
+    private func startOvernight(end: OvernightEnd) async -> String? {
+        if !lidMode.isSetUp {
+            do {
+                try await lidMode.setUp()
+                shieldSoon()
+            } catch LidModeError.setUpCancelled {
+                return Self.setUpCancelled
+            } catch {
+                return error.localizedDescription
+            }
+        }
+        if onTheMove {
+            let notes = await setOnTheMove(false)
+            if !notes.isEmpty {
+                Notifier.post(title: "Back at your desk", body: notes.joined(separator: " "))
+            }
+        }
+        if let problem = await lidModeProblem(true) {
+            return problem
+        }
+        if keepAwake.isActive {
+            keepAwakeOption = .off
+        }
+        refreshAwakeWatch()
+        claudeWasWorking = claudeWorking > 0
+        claudeIdleSince = nil
+        overnight = OvernightSession.start(end: end, morningHour: overnightHour, now: .now)
+        return nil
+    }
+
+    /// Turns lid-closed mode off if Awake turned it on (On the Move may own it now, then it stays). If that fails, the
+    /// session still ends and the panel's "still on" alert offers to turn lid-closed mode off again.
+    @discardableResult
+    private func endOvernight() async -> String? {
+        guard overnight != nil else { return nil }
+        overnight = nil
+        guard !onTheMove, defaults.bool(forKey: Keys.lidModeSetByAwake), let problem = await lidModeProblem(false) else {
+            return nil
+        }
+        return "Couldn't turn off lid-closed mode. \(problem)"
+    }
+
+    /// At launch. Overnight left on by a crash or restart goes on, its lid-closed mode back on without a password
+    /// prompt (nobody may be there), or ends if its time has passed. Lid-closed mode that an older build's switch left
+    /// on becomes Overnight that ends only when turned off.
+    private func resumeOvernight() {
+        if overnight == nil, !onTheMove, loadSnapshot() == nil, lidMode.isEnabled,
+           defaults.bool(forKey: Keys.lidModeSetByAwake) {
+            overnight = OvernightSession(end: .manually, until: nil, started: .now)
+        }
+        guard let session = overnight, !onTheMove else {
+            overnight = nil
+            return
+        }
+        if session.isOver(now: .now, claudeFinished: false) {
+            Task { await endOvernight() }
+        } else if !lidMode.isEnabled, !lidMode.isSetUp {
+            overnight = nil
+        } else if !lidMode.isEnabled {
+            Task {
+                if let problem = await lidModeProblem(true) {
+                    overnight = nil
+                    reportFailure(problem, title: "Couldn't resume Overnight")
+                }
+            }
+        }
     }
 
     // MARK: - On the Move
@@ -856,7 +1247,8 @@ final class AppModel: ObservableObject {
     private func putBackAfterMove(_ snapshot: MoveSnapshot?) async -> [String] {
         var notes: [String] = []
         await lidMode.refresh()
-        if snapshot?.lidMode != true, lidMode.isEnabled, let problem = await lidModeProblem(false) {
+        if snapshot?.lidMode != true, lidMode.isEnabled, defaults.bool(forKey: Keys.lidModeSetByAwake),
+           let problem = await lidModeProblem(false) {
             notes.append("Couldn't turn off lid-closed mode. \(problem)")
         }
         let lowPower = self.lowPower
@@ -1047,6 +1439,53 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - Health
+
+    /// Every tick: CPU and memory (both cheap). With `disk`, the free space too, off the main actor.
+    private func refreshHealth(disk: Bool) {
+        guard !isPreview else { return }
+        let discharging = power.onBattery || power.chargerTooWeak
+        observeHealth(HealthSample(cpu: HealthMonitor.cpuTicks(), memory: HealthMonitor.memoryPressure(),
+                                   diskFreeBytes: nil, discharging: discharging))
+        guard disk else { return }
+        Task {
+            let free = await Task.detached { HealthMonitor.diskFreeBytes() }.value
+            observeHealth(HealthSample(cpu: nil, memory: nil, diskFreeBytes: free, discharging: discharging))
+        }
+    }
+
+    private func observeHealth(_ sample: HealthSample) {
+        let started = healthWatch.observe(sample, now: .now)
+        if !healthWatch.warnings.contains(.busyCPU), busyProcess != nil {
+            busyProcess = nil
+        }
+        showHealthWarnings()
+        guard healthWarningsOn else { return }
+        for warning in started {
+            switch warning {
+            case .diskAlmostFull(let free):
+                Notifier.post(title: "Disk almost full", body: "\(Self.bytes(free)) free. Builds and downloads can fail.")
+            case .lowMemory(let critical):
+                Notifier.post(title: critical ? "Memory is very low" : "Memory is low",
+                              body: "Quit apps you don't need, or Claude's work slows down.")
+            case .busyCPU:
+                // Named once, when the warning starts: `ps` isn't worth running every few seconds.
+                Task {
+                    let name = await Task.detached { HealthMonitor.busiestProcess() }.value
+                    // Notified even if it calmed down meanwhile: the watch notifies once per discharge.
+                    if healthWatch.warnings.contains(.busyCPU) { busyProcess = name }
+                    Notifier.post(title: "Busy CPU on battery",
+                                  body: "\(name ?? "Something") has kept the CPU busy for 10 minutes, so the battery drains faster.")
+                }
+            }
+        }
+    }
+
+    private func showHealthWarnings() {
+        let shown = healthWarningsOn ? healthWatch.warnings : []
+        if healthWarnings != shown { healthWarnings = shown }
+    }
+
     // MARK: - Remote reach
 
     /// Re-checks Tailscale off the main actor, and with `sharing` the sharing ports too. Each port-22 connect starts
@@ -1108,10 +1547,14 @@ final class AppModel: ObservableObject {
         }
         set {
             keepAwakeWhileClaudeWorks = newValue == .whileClaudeWorks
-            // Fresh, not up to 30 s old: the session asking for this is likely working right now.
-            refreshAwakeWatch()
-            claudeWasWorking = claudeWorking > 0
-            claudeIdleSince = nil
+            // Only "while Claude works" starts its own watch: other choices would otherwise forget that Claude worked,
+            // and an On the Move or Overnight that ends when Claude finishes would never end.
+            if newValue == .whileClaudeWorks {
+                // Fresh, not up to 30 s old: the session asking for this is likely working right now.
+                refreshAwakeWatch()
+                claudeWasWorking = claudeWorking > 0
+                claudeIdleSince = nil
+            }
             switch newValue {
             case .off: keepAwake.deactivate()
             case .indefinitely, .whileClaudeWorks: keepAwake.activate()
@@ -1231,6 +1674,16 @@ final class AppModel: ObservableObject {
     /// Called when Settings opens: the user is there to answer a keychain prompt.
     func settingsWillOpen() {
         Task { await loadHotspotPassword() }
+        refreshShortcuts()
+    }
+
+    private func refreshShortcuts() {
+        guard !isPreview else { return }
+        let shortcuts = self.shortcuts
+        Task {
+            let names = await Task.detached { shortcuts.list() }.value
+            if names != installedShortcuts { installedShortcuts = names }
+        }
     }
 
     func refreshNearbyNetworks() {
@@ -1386,6 +1839,7 @@ final class AppModel: ObservableObject {
         tickCount += 1
         updateDesk()
         refreshPower()
+        refreshHealth(disk: tickCount % 6 == 0)
         guard tickCount % 6 == 0 else { return }
         refreshAwakeWatch()
         if Date.now.timeIntervalSince(lastReachCheck) >= Self.reachInterval {
@@ -1450,11 +1904,28 @@ final class AppModel: ObservableObject {
             let timeUp = moveEnd == .afterFourHours && Date.now.timeIntervalSince(started) >= Self.moveTimeLimit
             if timeUp || (moveEnd == .whenClaudeFinishes && claudeFinished) {
                 Task {
-                    await setOnTheMove(false)
+                    let ended = await modeStep { () -> Bool in
+                        guard self.onTheMove else { return false }
+                        _ = await self.setOnTheMove(false)
+                        return true
+                    }
+                    guard ended else { return }
                     Notifier.post(title: timeUp ? "On the Move ended after 4 hours" : "Claude finished",
                                   body: "On the Move is off, so your Mac can sleep.")
                     sleepIfLidClosed()
                 }
+            }
+        } else if let session = overnight, session.isOver(now: .now, claudeFinished: claudeFinished) {
+            Task {
+                // Queued with the other mode changes; one that ran first may have ended or replaced the session.
+                let (ended, problem) = await modeStep { () -> (Bool, String?) in
+                    guard self.overnight == session else { return (false, nil) }
+                    return (true, await self.endOvernight())
+                }
+                guard ended else { return }
+                Notifier.post(title: session.end == .morning ? "Good morning" : "Claude finished",
+                              body: problem ?? "Overnight is off, so your Mac can sleep.")
+                sleepIfLidClosed()
             }
         } else if keepAwakeWhileClaudeWorks, claudeFinished {
             keepAwakeOption = .off
@@ -1488,7 +1959,7 @@ final class AppModel: ObservableObject {
                                onBattery: PowerSource.isOnBattery(), chargerTooWeak: power.chargerTooWeak,
                                batteryPercent: PowerSource.batteryLevel(), keepingAwake: keepAwake.isActive,
                                lidModeOn: lidMode.isEnabled, lowPowerOn: lowPowerOnBattery ?? true,
-                               enabled: safetyEnabled)
+                               enabled: safetyEnabled, overnight: overnight != nil && !onTheMove)
         switch guardEpisode.filter(HotBagGuard.decide(input)) {
         case .none:
             break
@@ -1504,6 +1975,7 @@ final class AppModel: ObservableObject {
             if onTheMove {
                 await setOnTheMove(false)
             }
+            overnight = nil
             keepAwakeOption = .off
             if lidMode.isEnabled {
                 _ = await lidModeProblem(false)
@@ -1544,16 +2016,22 @@ final class AppModel: ObservableObject {
         publicShortcut = sample.publicShortcut
         wifi = WiFiState(isPoweredOn: true, ssid: sample.wifiName)
         connectivity = sample.connectivity
-        shield.willRaise(from: FirewallState(enabled: false, stealth: false))
-        shield.didApply(observed: FirewallShield.shielded)
-        firewallNow = FirewallShield.shielded
+        if sample.shielded {
+            shield.willRaise(from: FirewallState(enabled: false, stealth: false))
+            shield.didApply(observed: FirewallShield.shielded)
+            firewallNow = FirewallShield.shielded
+        }
         sharingOn = sample.sharingOn
         tailscale = sample.tailscale
         reachChecked = true
         claudeWorking = sample.claudeSessions
         otherAwakeApps = sample.otherAwakeApps
         nearbyNetworks = sample.nearbyNetworks
+        installedShortcuts = sample.installedShortcuts
         lastFailure = sample.lastFailure
         keepAwakeOption = sample.keepAwake
+        overnight = sample.overnight
+        healthWarnings = sample.healthWarnings
+        busyProcess = sample.busyProcess
     }
 }

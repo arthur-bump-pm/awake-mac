@@ -1,14 +1,14 @@
 import AwakeCore
 import SwiftUI
 
-/// The menu bar panel: status, On the Move, keep awake, the two switches, and a footer.
+/// The menu bar panel: status, anything that needs attention, one mode at a time, and a footer. Everything else
+/// lives in Settings.
 struct PanelView: View {
     @ObservedObject var model: AppModel
     var openSettings: () -> Void
     /// The room on screen below the menu bar; taller content scrolls inside it. Nil: no limit (previews).
     var maxHeight: CGFloat?
     @Environment(\.frostedGlass) private var frostedGlass
-    @State private var copiedSSH = false
 
     var body: some View {
         // The panel sizes to its content; once that's taller than the screen allows, the same content scrolls.
@@ -34,59 +34,29 @@ struct PanelView: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
-            statusLines
             ForEach(model.alerts) { alert in
                 AlertRow(alert: alert) { Task { await model.perform(alert) } }
             }
-            moveCard
-            keepAwake
-            VStack(spacing: 6) {
-                Toggle(isOn: Binding(get: { model.lidMode.isEnabled },
-                                     set: { on in Task { await model.setLidModeFromMenu(on) } })) {
-                    RowLabel(title: "Lid-closed mode", detail: model.lidMode.isSetUp ? nil : "Asks for your password once")
-                }
-                Toggle(isOn: $model.autoHotspot) {
-                    RowLabel(title: "Auto-hotspot", detail: hotspotDetail)
-                }
-            }
-            .toggleStyle(AwakeSwitchStyle())
-            .padding(.horizontal, 6)
-            if model.autoHotspot, model.hotspotIsConfigured, model.canJoinHotspotNow {
-                Button { Task { await model.joinHotspotNow() } } label: {
-                    Text("Join \(model.hotspotSSID) now")
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                .buttonStyle(GhostButtonStyle())
-                .padding(.horizontal, 6)
-            }
-            if let others = model.otherAwakeAppsLine {
-                Text(others)
-                    .font(Theme.body(11))
-                    .foregroundStyle(Theme.slate)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 6)
-            }
+            modes
             footer
         }
         .padding(Theme.panelPadding)
     }
 
+    /// Two lines: the network and battery, then the network's profile, Claude's sessions and battery time.
     private var header: some View {
         HStack(spacing: 10) {
             Circle()
                 .fill(statusColor)
                 .frame(width: 8, height: 8)
                 .shadow(color: statusColor.opacity(0.6), radius: 5)
-            // Each line carries its own battery text on the right, so a long charger note doesn't squeeze the
-            // network name above it.
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
                     Text(model.networkStatus)
                         .font(Theme.body(13, weight: .medium))
                         .foregroundStyle(Theme.bone)
                         .lineLimit(1)
-                        .truncationMode(.middle)
+                        .truncationMode(.tail)
                     Spacer(minLength: 0)
                     if let percent = model.power.percent {
                         Text("\(percent)%")
@@ -97,34 +67,25 @@ struct PanelView: View {
                             .accessibilityLabel("Battery \(percent) percent")
                     }
                 }
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(model.awakeStatus)
-                        .font(Theme.body(11))
-                        .foregroundStyle(Theme.slate)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
-                    if model.power.percent != nil, !model.power.chargerTooWeak, let detail = model.power.detail {
-                        Text(detail)
+                let detail = model.panelDetail
+                // A weak charger is an alert of its own, so the line doesn't repeat it.
+                let battery = model.power.percent != nil && !model.power.chargerTooWeak ? model.power.detail : nil
+                if detail != nil || battery != nil {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(detail ?? "")
                             .font(Theme.body(11))
-                            .foregroundStyle(powerNeedsAttention ? Theme.attention : Theme.slate)
-                            .monospacedDigit()
-                            .fixedSize()
+                            .foregroundStyle(Theme.slate)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer(minLength: 0)
+                        if let battery {
+                            Text(battery)
+                                .font(Theme.body(11))
+                                .foregroundStyle(powerNeedsAttention ? Theme.attention : Theme.slate)
+                                .monospacedDigit()
+                                .fixedSize()
+                        }
                     }
-                }
-                // A weak charger gets a line of its own, so neither it nor the awake status gets cut short.
-                if model.power.percent != nil, model.power.chargerTooWeak, let detail = model.power.detail {
-                    Text(detail)
-                        .font(Theme.body(11))
-                        .foregroundStyle(Theme.attention)
-                        .monospacedDigit()
-                        .lineLimit(1)
-                }
-                if model.claudeWorking > 0 {
-                    Text(model.claudeWorking == 1 ? "1 Claude session working" : "\(model.claudeWorking) Claude sessions working")
-                        .font(Theme.body(11))
-                        .foregroundStyle(Theme.slate)
-                        .lineLimit(1)
                 }
             }
         }
@@ -133,109 +94,36 @@ struct PanelView: View {
         .accessibilityElement(children: .combine)
     }
 
-    /// The network line (home or public) and whether the owner's phone can reach this Mac.
-    @ViewBuilder private var statusLines: some View {
-        let profile = model.profileStatus
-        // Without Tailscale there's nothing to act on, so the line stays out of the panel.
-        let reach = model.reach.flatMap { $0 == .tailscaleMissing ? nil : $0 }
-        if profile != nil || reach != nil {
-            VStack(alignment: .leading, spacing: 6) {
-                if let profile {
-                    StatusLine(text: profile) {
-                        if model.profile == .public, model.wifi.ssid != nil {
-                            Button("Trust") { model.trustCurrentNetwork() }
-                                .buttonStyle(GhostButtonStyle())
-                                .help("Trust this network")
-                                .accessibilityLabel("Trust this network")
+    /// One grouped control: the mode that's on is the white row (white = on); Keep awake shows its lengths under it.
+    private var modes: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(AwakeMode.allCases) { mode in
+                ModeRow(title: mode.title, detail: model.modeDetail(mode), selected: model.mode == mode) {
+                    Task { await model.setModeFromMenu(mode) }
+                }
+                if mode == .keepAwake, model.mode == .keepAwake {
+                    FlowLayout(spacing: 6) {
+                        ForEach(KeepAwakeOption.chips) { option in
+                            Chip(title: option.title, spokenTitle: option.spokenTitle,
+                                 selected: model.keepAwakeOption == option) { Task { await model.chooseKeepAwake(option) } }
                         }
                     }
-                }
-                if let reach {
-                    StatusLine(text: reach.text) {
-                        if let action = reachAction(reach) {
-                            Button(action) {
-                                model.performReachAction()
-                                if reach.isReachable { showCopied() }
-                            }
-                            .buttonStyle(GhostButtonStyle())
-                        }
-                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Keep awake for")
                 }
             }
-            .padding(.horizontal, 6)
         }
+        .padding(Self.modeInset)
+        .background(RoundedRectangle(cornerRadius: Theme.innerRadius, style: .continuous).fill(Theme.glass))
+        .overlay(RoundedRectangle(cornerRadius: Theme.innerRadius, style: .continuous).strokeBorder(Theme.hairline))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Mode")
     }
 
-    private func reachAction(_ reach: RemoteReach) -> String? {
-        switch reach {
-        case .reachable, .untilSleep: copiedSSH ? "Copied" : "Copy SSH"
-        case .remoteLoginOff: "Open Settings"
-        case .tailscaleOff: model.canOpenTailscale ? "Open Tailscale" : nil
-        case .tailscaleMissing: nil
-        }
-    }
-
-    private func showCopied() {
-        copiedSSH = true
-        Task {
-            try? await Task.sleep(for: .seconds(1.5))
-            copiedSSH = false
-        }
-    }
-
-    /// Battery running low (under the warning threshold) or a charger that can't keep up.
-    private var powerNeedsAttention: Bool {
-        let power = model.power
-        if power.chargerTooWeak { return true }
-        return power.onBattery && (power.minutesLeft.map { $0 < model.outletWarningMinutes } ?? false)
-    }
-
-    private var moveCard: some View {
-        Toggle(isOn: Binding(get: { model.onTheMove },
-                             set: { on in Task { await model.setOnTheMoveFromMenu(on) } })) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("On the Move")
-                    .font(Theme.body(15, weight: .semibold))
-                    .foregroundStyle(Theme.graphite)
-                Text(model.onTheMove ? "Lid closed is fine · ends \(model.moveEnd.phrase)"
-                                     : "Keeps Claude running while you travel")
-                    .font(Theme.body(11))
-                    .foregroundStyle(Color(hex: 0x686868))
-            }
-        }
-        .toggleStyle(AwakeSwitchStyle(onLight: true))
-        .padding(.vertical, 12)
-        .padding(.leading, 14)
-        .padding(.trailing, 12)
-        .background(RoundedRectangle(cornerRadius: Theme.innerRadius, style: .continuous).fill(Theme.white))
-    }
-
-    private var keepAwake: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Keep awake")
-                    .font(Theme.body(12, weight: .medium))
-                    .foregroundStyle(Theme.ash)
-                Spacer()
-                if let left = model.keepAwake.remainingTime {
-                    Text("\(AppModel.format(left)) left")
-                        .font(Theme.body(11))
-                        .foregroundStyle(Theme.slate)
-                        .monospacedDigit()
-                }
-            }
-            FlowLayout(spacing: 6) {
-                ForEach(KeepAwakeOption.chips) { option in
-                    Chip(title: option.title, spokenTitle: option.spokenTitle, selected: model.keepAwakeOption == option) {
-                        model.keepAwakeOption = option
-                    }
-                }
-            }
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Keep awake")
-        }
-        .padding(.horizontal, 6)
-    }
+    /// Rows sit this far inside the group, so their corners are concentric with it.
+    static let modeInset: CGFloat = 4
 
     private var footer: some View {
         HStack {
@@ -251,6 +139,12 @@ struct PanelView: View {
         .overlay(alignment: .top) { Rectangle().fill(Theme.hairline).frame(height: 1) }
     }
 
+    /// Battery running low (under the warning threshold).
+    private var powerNeedsAttention: Bool {
+        let power = model.power
+        return power.onBattery && (power.minutesLeft.map { $0 < model.outletWarningMinutes } ?? false)
+    }
+
     private var statusColor: Color {
         switch model.connectivity {
         case .online?: Theme.online
@@ -259,50 +153,48 @@ struct PanelView: View {
         case nil: Theme.slate
         }
     }
-
-    private var hotspotDetail: String? {
-        guard model.autoHotspot else { return model.hotspotSSID.isEmpty ? nil : model.hotspotSSID }
-        if model.hotspotSSID.isEmpty { return "Choose a hotspot in Settings" }
-        if !model.location.isAuthorized { return "Needs Location access" }
-        return model.isOnHotspot ? "Using \(model.hotspotSSID)" : "Ready · \(model.hotspotSSID)"
-    }
 }
 
-private struct RowLabel: View {
+/// A mode: title and one line of detail. The selected one is white with graphite text and a check mark, so it doesn't
+/// rely on the fill alone.
+private struct ModeRow: View {
     let title: String
-    let detail: String?
+    let detail: String
+    let selected: Bool
+    let action: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(title)
-                .font(Theme.body(13))
-                .foregroundStyle(Theme.bone)
-            if let detail {
-                Text(detail)
-                    .font(Theme.body(11))
-                    .foregroundStyle(Theme.slate)
+        Button(action: action) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(Theme.body(13, weight: selected ? .semibold : .medium))
+                        .foregroundStyle(selected ? Theme.graphite : Theme.bone)
+                    Text(detail)
+                        .font(Theme.body(11))
+                        .foregroundStyle(selected ? Color(hex: 0x5c5c5c) : Theme.slate)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                Spacer(minLength: 6)
+                if selected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Theme.graphite)
+                }
             }
+            .padding(.vertical, 7)
+            .padding(.horizontal, 10)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.innerRadius - PanelView.modeInset, style: .continuous)
+                    .fill(selected ? Theme.white : Color.clear)
+            )
+            .contentShape(Rectangle())
         }
-        .padding(.vertical, 2)
-    }
-}
-
-/// One compact line of status with an optional ghost action on the right.
-private struct StatusLine<Action: View>: View {
-    let text: String
-    @ViewBuilder let action: Action
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Text(text)
-                .font(Theme.body(12))
-                .foregroundStyle(Theme.ash)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer(minLength: 6)
-            action
-        }
-        .frame(minHeight: 24)
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityValue(detail)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 }
 
@@ -311,17 +203,28 @@ private struct AlertRow: View {
     let action: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            Text(alert.message)
-                .font(Theme.body(12))
-                .foregroundStyle(Theme.bone)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 6)
-            Button(alert.action, action: action)
-                .buttonStyle(PillButtonStyle())
+        Group {
+            if let title = alert.action {
+                HStack(spacing: 10) {
+                    message
+                    Spacer(minLength: 6)
+                    Button(title, action: action)
+                        .buttonStyle(PillButtonStyle())
+                }
+            } else {
+                // Nothing to press: the message takes the whole row.
+                message
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: Theme.innerRadius, style: .continuous).fill(Theme.glass))
         .overlay(RoundedRectangle(cornerRadius: Theme.innerRadius, style: .continuous).strokeBorder(Theme.hairline))
+    }
+    private var message: some View {
+        Text(alert.message)
+            .font(Theme.body(12))
+            .foregroundStyle(Theme.bone)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }

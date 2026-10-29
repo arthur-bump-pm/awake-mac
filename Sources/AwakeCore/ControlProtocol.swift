@@ -3,7 +3,7 @@ import Foundation
 /// Messages between the Awake app and `awakectl` (CLI + MCP server), one JSON object per line
 /// over a Unix socket that only the current user can open.
 public enum ControlCommand: String, Codable, Sendable {
-    case status, move, keepAwake, lidMode, autoHotspot, joinHotspot
+    case status, move, keepAwake, lidMode, autoHotspot, joinHotspot, overnight
 }
 
 public struct ControlRequest: Codable, Sendable, Equatable {
@@ -13,12 +13,16 @@ public struct ControlRequest: Codable, Sendable, Equatable {
     public var minutes: Int?
     /// keepAwake only: stay awake while any Claude Code session is working, then let the Mac sleep.
     public var whileClaudeWorks: Bool?
+    /// overnight only: when it ends; nil = the user's choice in Settings.
+    public var end: OvernightEnd?
 
-    public init(_ command: ControlCommand, on: Bool? = nil, minutes: Int? = nil, whileClaudeWorks: Bool? = nil) {
+    public init(_ command: ControlCommand, on: Bool? = nil, minutes: Int? = nil, whileClaudeWorks: Bool? = nil,
+                end: OvernightEnd? = nil) {
         self.command = command
         self.on = on
         self.minutes = minutes
         self.whileClaudeWorks = whileClaudeWorks
+        self.end = end
     }
 }
 
@@ -32,7 +36,7 @@ extension ControlRequest {
         switch command {
         case .status, .joinHotspot:
             return nil
-        case .move, .lidMode, .autoHotspot:
+        case .move, .lidMode, .autoHotspot, .overnight:
             return on == nil ? "\"on\" must be true or false." : nil
         case .keepAwake:
             guard let on else { return "\"on\" must be true or false." }
@@ -81,6 +85,18 @@ public struct AwakeStatus: Codable, Sendable, Equatable {
     public var reachable: Bool?
     /// One line about reach, e.g. "Reachable · Tailscale + SSH" or "Remote Login is off".
     public var reach: String?
+    /// An Overnight session is on: the Mac keeps running with the lid open or closed until `overnightEnds`.
+    public var overnight: Bool?
+    /// When Overnight ends, e.g. "at 9:00 AM", "when Claude finishes" or "when turned off".
+    public var overnightEnds: String?
+    /// Free space on the startup disk, in GB (10^9 bytes).
+    public var diskFreeGB: Double?
+    /// macOS's memory pressure: "normal", "warning" or "critical".
+    public var memoryPressure: String?
+    /// CPU use over about the last minute, in percent of all cores.
+    public var cpuPercent: Int?
+    /// Health warnings now, as sentences (disk almost full, low memory, busy CPU on battery).
+    public var warnings: [String]?
     /// One or two plain sentences for people (and for Claude to relay).
     public var summary: String
 
@@ -90,7 +106,9 @@ public struct AwakeStatus: Codable, Sendable, Equatable {
                 keepAwakeWhileClaudeWorks: Bool = false, claudeWorking: Int = 0, otherAwakeApps: [String] = [],
                 captivePortal: Bool = false, atDesk: Bool = false, networkProfile: NetworkProfile? = nil,
                 firewallShield: Bool? = nil, batteryMinutesLeft: Int? = nil, chargerWatts: Int? = nil,
-                chargerTooWeak: Bool? = nil, reachable: Bool? = nil, reach: String? = nil, summary: String) {
+                chargerTooWeak: Bool? = nil, reachable: Bool? = nil, reach: String? = nil, overnight: Bool? = nil,
+                overnightEnds: String? = nil, diskFreeGB: Double? = nil, memoryPressure: String? = nil,
+                cpuPercent: Int? = nil, warnings: [String]? = nil, summary: String) {
         self.onTheMove = onTheMove
         self.keepAwake = keepAwake
         self.keepAwakeMinutesLeft = keepAwakeMinutesLeft
@@ -116,6 +134,12 @@ public struct AwakeStatus: Codable, Sendable, Equatable {
         self.chargerTooWeak = chargerTooWeak
         self.reachable = reachable
         self.reach = reach
+        self.overnight = overnight
+        self.overnightEnds = overnightEnds
+        self.diskFreeGB = diskFreeGB
+        self.memoryPressure = memoryPressure
+        self.cpuPercent = cpuPercent
+        self.warnings = warnings
         self.summary = summary
     }
 }

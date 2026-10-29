@@ -11,7 +11,9 @@ public struct MCPHandler {
         Awake controls this Mac's keep-awake, lid-closed and hotspot settings. When the user says \
         they have to move or leave (for example "hey, I got to move", "heading out", "packing up"), call \
         awake_on_the_move with on=true before you reply. When they say they're settled or back at a \
-        desk, call it with on=false. Report the result in one short sentence.
+        desk, call it with on=false. When they're leaving the Mac to run overnight or for a long job (for \
+        example "going to bed", "leave it running tonight"), call awake_overnight with on=true. Report the result \
+        in one short sentence.
         """
 
     /// One week, matching the app's limit.
@@ -79,7 +81,7 @@ public struct MCPHandler {
     private func callTool(_ params: [String: Any]) -> [String: Any] {
         let arguments = params["arguments"] as? [String: Any] ?? [:]
         let name = params["name"] as? String ?? ""
-        let switches = ["awake_on_the_move", "awake_lid_closed_mode", "awake_auto_hotspot"]
+        let switches = ["awake_on_the_move", "awake_lid_closed_mode", "awake_auto_hotspot", "awake_overnight"]
         // JSON true/false only: a missing or malformed value must never turn something on.
         let on = (arguments["on"] as? NSNumber).flatMap { CFGetTypeID($0) == CFBooleanGetTypeID() ? $0.boolValue : nil }
         if switches.contains(name), on == nil {
@@ -108,6 +110,17 @@ public struct MCPHandler {
                 // A missing or unknown mode must not keep the Mac awake indefinitely.
                 return toolText("mode must be one of indefinitely, timed, while_claude_works or off.", isError: true)
             }
+        case "awake_overnight":
+            let end: OvernightEnd?
+            switch arguments["ends"] {
+            case nil: end = nil
+            case "morning" as String: end = .morning
+            case "when_claude_finishes" as String: end = .whenClaudeFinishes
+            case "when_turned_off" as String: end = .manually
+            default:
+                return toolText("ends must be one of morning, when_claude_finishes or when_turned_off.", isError: true)
+            }
+            request = ControlRequest(.overnight, on: on!, end: end)
         case "awake_lid_closed_mode":
             request = ControlRequest(.lidMode, on: on!)
         case "awake_auto_hotspot":
@@ -160,15 +173,28 @@ public struct MCPHandler {
             ("I'm back", "at my desk now"); that puts back their previous settings.
             """,
              ["on": ["type": "boolean", "description": "true = on the move, false = back at a desk"]], required: ["on"]),
+        tool("awake_overnight", "Overnight", """
+            Switch Awake's Overnight mode: the Mac keeps running with the lid open or closed (the display may sleep) \
+            while long jobs finish. Turn it ON when the user leaves the Mac to work overnight or for hours, e.g. \
+            "going to bed, keep it running", "leave it on tonight", "let this run while I'm out". It changes \
+            nothing else (Wi-Fi, firewall and Low Power Mode stay as they are). By default it ends at the morning \
+            hour in the user's Awake Settings; `ends` can make it end when every Claude session has finished, or \
+            only when turned off. The first time, macOS asks the user for their password. Tell the user briefly \
+            when it ends.
+            """,
+             ["on": ["type": "boolean", "description": "true = keep running, false = let the Mac sleep normally again"],
+              "ends": ["type": "string", "enum": ["morning", "when_claude_finishes", "when_turned_off"],
+                       "description": "Only with on=true. Leave out to use the user's Settings."]],
+             required: ["on"]),
         tool("awake_status", "Awake Status",
-             "Show Awake's current state: On the Move, keep-awake, lid-closed mode, auto-hotspot, network (home or public, firewall shield), battery time left or charger, and whether the user's phone can reach this Mac (Tailscale + SSH)."),
+             "Show Awake's current state: On the Move, Overnight, keep-awake, lid-closed mode, auto-hotspot, network (home or public, firewall shield), battery time left or charger, the Mac's health (free disk space, memory pressure, CPU use, and warnings), and whether the user's phone can reach this Mac (Tailscale + SSH). Check it before starting a long job."),
         tool("awake_keep_awake", "Keep Awake",
              "Keep the Mac awake (lid open): indefinitely, for some minutes, or while Claude Code is working (it lets the Mac sleep a few minutes after every session goes idle). Or stop.",
              ["mode": ["type": "string", "enum": ["indefinitely", "timed", "while_claude_works", "off"]],
               "minutes": ["type": "integer", "minimum": 1, "maximum": maxMinutes, "description": "Only for mode=timed."]],
              required: ["mode"]),
         tool("awake_lid_closed_mode", "Lid-Closed Mode",
-             "Turn lid-closed mode on or off (the Mac keeps running with the lid closed). The first time, macOS asks the user for their password.",
+             "Turn lid-closed mode on or off (the Mac keeps running with the lid closed). On is the same as Overnight that ends only when turned off. The first time, macOS asks the user for their password.",
              ["on": onSwitch], required: ["on"]),
         tool("awake_auto_hotspot", "Auto-Hotspot",
              "Turn automatic switching to the iPhone hotspot (when the internet drops) on or off.",

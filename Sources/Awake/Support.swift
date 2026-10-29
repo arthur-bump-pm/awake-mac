@@ -74,9 +74,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             case .signIn:
                 NSWorkspace.shared.open(model.portalURL ?? URL(string: "http://captive.apple.com")!)
             case .turnOnMove:
-                await model.setOnTheMoveFromMenu(true)
+                await model.setModeFromMenu(.onTheMove)
             case .backAtDesk:
-                await model.setOnTheMoveFromMenu(false)
+                await model.endMoveFromMenu()
             case nil:
                 panel?.show()
             }

@@ -50,10 +50,14 @@ public struct ShortcutRunner: Sendable {
     public static let tool = "/usr/bin/shortcuts"
 
     private let runner: CommandRunning
+    /// For `list`: stdout only, so a warning on stderr can't show up as a shortcut's name.
+    private let listRunner: CommandRunning
 
     /// A shortcut that waits for input would otherwise hang forever.
-    public init(runner: CommandRunning = ProcessCommandRunner(timeout: 60)) {
+    public init(runner: CommandRunning = ProcessCommandRunner(timeout: 60),
+                listRunner: CommandRunning = ProcessCommandRunner(timeout: 15, includesErrors: false)) {
         self.runner = runner
+        self.listRunner = listRunner
     }
 
     /// Runs it and returns whether it finished without error. An empty name skips it (and counts as fine).
@@ -62,5 +66,13 @@ public struct ShortcutRunner: Sendable {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return true }
         return runner.run(Self.tool, ["run", name]).status == 0
+    }
+
+    /// The user's shortcuts by name (`shortcuts list`), sorted, for Settings to pick from; empty if the list fails.
+    public func list() -> [String] {
+        let result = listRunner.run(Self.tool, ["list"])
+        guard result.status == 0 else { return [] }
+        let names = result.output.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+        return Array(Set(names.filter { !$0.isEmpty })).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 }

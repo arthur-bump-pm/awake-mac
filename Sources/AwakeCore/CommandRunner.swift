@@ -15,13 +15,16 @@ public protocol CommandRunning: Sendable {
     func run(_ executable: String, _ arguments: [String]) -> CommandResult
 }
 
-/// Runs a command synchronously and returns its exit status with stdout and stderr combined.
+/// Runs a command synchronously and returns its exit status with stdout and stderr combined (or stdout alone).
 public struct ProcessCommandRunner: CommandRunning {
     /// Stops the command after this many seconds (for tools that can hang); nil waits for it to finish.
     private let timeout: TimeInterval?
+    /// False drops stderr, for output that's read as data (a list of names) rather than shown.
+    private let includesErrors: Bool
 
-    public init(timeout: TimeInterval? = nil) {
+    public init(timeout: TimeInterval? = nil, includesErrors: Bool = true) {
         self.timeout = timeout
+        self.includesErrors = includesErrors
     }
 
     public func run(_ executable: String, _ arguments: [String]) -> CommandResult {
@@ -30,7 +33,7 @@ public struct ProcessCommandRunner: CommandRunning {
         process.arguments = arguments
         let pipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = pipe
+        process.standardError = includesErrors ? pipe : FileHandle.nullDevice
         do {
             try process.run()
         } catch {

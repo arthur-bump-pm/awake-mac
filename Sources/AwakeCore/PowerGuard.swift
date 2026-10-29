@@ -33,9 +33,12 @@ public struct GuardInput: Equatable, Sendable {
     public var lidModeOn: Bool
     public var lowPowerOn: Bool
     public var enabled: Bool
+    /// An Overnight session is on: the user left the Mac to run, on a desk rather than in a bag.
+    public var overnight: Bool
 
     public init(thermal: ThermalLevel, lidClosed: Bool, externalDisplay: Bool, onBattery: Bool, chargerTooWeak: Bool,
-                batteryPercent: Int?, keepingAwake: Bool, lidModeOn: Bool, lowPowerOn: Bool, enabled: Bool) {
+                batteryPercent: Int?, keepingAwake: Bool, lidModeOn: Bool, lowPowerOn: Bool, enabled: Bool,
+                overnight: Bool = false) {
         self.thermal = thermal
         self.lidClosed = lidClosed
         self.externalDisplay = externalDisplay
@@ -46,6 +49,7 @@ public struct GuardInput: Equatable, Sendable {
         self.lidModeOn = lidModeOn
         self.lowPowerOn = lowPowerOn
         self.enabled = enabled
+        self.overnight = overnight
     }
 
     /// The battery is running down: on battery, or on a charger too weak to keep up.
@@ -74,12 +78,15 @@ public enum HotBagGuard {
         if input.discharging, let percent = input.batteryPercent, percent <= lowBatteryPercent {
             return .stopAndSleep(.lowBattery(percent))
         }
-        let closedInBag = input.lidClosed && input.lidModeOn && !input.externalDisplay
-        if closedInBag, input.thermal >= .serious {
+        let closed = input.lidClosed && input.lidModeOn && !input.externalDisplay
+        // Overnight on a charger is a Mac left running on a desk, not one in a bag: only critical heat stops it (macOS
+        // throttles it before that). On battery, Overnight gets the bag rules, since nothing says it's on a desk.
+        let onDeskOvernight = input.overnight && !input.discharging
+        if closed, input.thermal >= (onDeskOvernight ? .critical : .serious) {
             return .stopAndSleep(.hot)
         }
         // `pmset -b lowpowermode` only applies on battery power, so a weak charger doesn't count here.
-        if closedInBag, input.thermal >= .fair, input.onBattery, !input.lowPowerOn {
+        if closed, input.thermal >= .fair, input.onBattery, !input.lowPowerOn {
             return .enableLowPower
         }
         return .none

@@ -3,7 +3,7 @@ import AwakeCore
 import IOKit.pwr_mgt
 import SwiftUI
 
-/// `Awake --render-preview <folder>` writes the panel and Settings as PNGs and exits. It draws a made-up sample
+/// `Awake --render-preview <folder>` writes the panel (two samples) and each Settings tab as PNGs and exits. It draws a made-up sample
 /// (`PreviewSample`) in a model of its own: it never reads or changes the user's settings, never runs a command and
 /// never starts the app. For reviewing the design, edge cases included.
 enum DevPreview {
@@ -21,16 +21,27 @@ enum DevPreview {
         _ = NSApplication.shared
         Theme.registerFonts()
         let model = AppModel.preview()
+        let calm = AppModel.preview(.calm)
         do {
-            try save(PanelView(model: model, openSettings: {}).environment(\.frostedGlass, false)
-                        .padding(28).background(Color(hex: 0x33405e)), to: directory, name: "panel.png")
-            try save(SettingsContent(model: model).environment(\.liveControls, false)
-                        .frame(width: 520).background(Theme.void), to: directory, name: "settings.png")
+            try save(panel(model), to: directory, name: "panel.png")
+            try save(panel(calm), to: directory, name: "panel-calm.png")
+            for tab in SettingsTab.allCases {
+                try save(SettingsContent(model: model, tab: tab, scrolls: false).environment(\.liveControls, false)
+                            .frame(width: 520).background(Theme.void), to: directory, name: "settings-\(tab.title.lowercased()).png")
+            }
+            // The calm sample has no admin permission yet: the Setup tab's dot and its Set Up button.
+            try save(SettingsContent(model: calm, tab: .setup, scrolls: false).environment(\.liveControls, false)
+                        .frame(width: 520).background(Theme.void), to: directory, name: "settings-setup-needed.png")
         } catch {
             fail("Awake: can't write the preview to \(directory.path): \(error.localizedDescription)")
         }
-        print("Wrote panel.png and settings.png to \(directory.path)")
+        print("Wrote panel.png, panel-calm.png and settings-<tab>.png to \(directory.path)")
         exit(0)
+    }
+
+    private static func panel(_ model: AppModel) -> some View {
+        PanelView(model: model, openSettings: {}).environment(\.frostedGlass, false)
+            .padding(28).background(Color(hex: 0x33405e))
     }
 
     private static func fail(_ message: String) -> Never {
@@ -54,9 +65,10 @@ enum DevPreview {
     }
 }
 
-/// The made-up state the preview draws, chosen to show edge cases: the longest Wi-Fi name (32 characters) on a
-/// sign-in page, four alerts at once, a weak charger next to lid-closed mode, and other apps holding the Mac awake.
-/// No real names, paths or settings.
+/// The made-up state the preview draws. The default shows edge cases: the longest Wi-Fi name (32 characters) on a
+/// sign-in page, five alerts at once (a weak charger and a nearly full disk among them) and Overnight on. `calm` is
+/// an ordinary moment: home Wi-Fi, keep-awake on, nothing to warn about, the admin permission not set up yet. No real
+/// names, paths or settings.
 struct PreviewSample {
     static let appPath = "/Applications/Awake.app"
     static let userName = "alex"
@@ -66,12 +78,13 @@ struct PreviewSample {
     var hotspot = "Travel Phone"
     var trustedNetworks = ["Home Network", "Studio 5G"]
     var publicShortcut = "Public Wi-Fi"
+    var installedShortcuts = ["Focus: Work", "Public Wi-Fi", "Studio Lights Off"]
     var nearbyNetworks = ["Harbourside Coworking Guest WiFi", "Studio 5G", "Travel Phone"]
-    /// On, but not set by Awake, so the panel also warns that it was turned on elsewhere.
+    /// On for Overnight.
     var lidClosedMode = true
     var adminPermission = true
     var locationAllowed = true
-    var keepAwake = KeepAwakeOption.minutes(240)
+    var keepAwake = KeepAwakeOption.off
     var claudeSessions = 2
     var otherAwakeApps = ["Music"]
     var sharingOn: [SharingService] = [.screenSharing, .remoteLogin]
@@ -81,6 +94,33 @@ struct PreviewSample {
     /// Plugged into a 30 W charger that can't keep up.
     var power = PowerReading(percent: 64, onBattery: false, externalConnected: true, isCharging: false, minutesLeft: nil,
                              drawWatts: 6, adapterWatts: 30)
+    /// Ends at 9:00 tomorrow, wherever and whenever the preview runs.
+    var overnight: OvernightSession? = OvernightSession(
+        end: .morning, until: Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: .now.addingTimeInterval(86_400)),
+        started: .now)
+    var healthWarnings: [HealthWarning] = [.diskAlmostFull(freeBytes: 7_400_000_000)]
+    /// The firewall shield is up (public Wi-Fi).
+    var shielded = true
+    var busyProcess: String?
+
+    static var calm: PreviewSample {
+        var sample = PreviewSample()
+        sample.wifiName = "Home Network"
+        sample.connectivity = .online
+        sample.lidClosedMode = false
+        sample.overnight = nil
+        sample.keepAwake = .whileClaudeWorks
+        sample.claudeSessions = 1
+        sample.otherAwakeApps = []
+        sample.sharingOn = []
+        sample.lastFailure = nil
+        sample.healthWarnings = []
+        sample.shielded = false
+        sample.adminPermission = false
+        sample.power = PowerReading(percent: 82, onBattery: true, externalConnected: false, isCharging: false,
+                                    minutesLeft: 190, drawWatts: 7, adapterWatts: nil)
+        return sample
+    }
 }
 
 /// UserDefaults kept in memory only. Every read and write is overridden, so nothing reaches the user's settings

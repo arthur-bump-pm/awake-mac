@@ -36,10 +36,17 @@ final class ControlSocketTests: XCTestCase {
         status.chargerTooWeak = false
         status.reachable = true
         status.reach = "Reachable · Tailscale + SSH"
+        status.overnight = true
+        status.overnightEnds = "at 9:00 AM"
+        status.diskFreeGB = 41.3
+        status.memoryPressure = "warning"
+        status.cpuPercent = 12
+        status.warnings = ["Memory is low, so apps and Claude slow down."]
         XCTAssertEqual(try JSONDecoder().decode(AwakeStatus.self, from: JSONEncoder().encode(status)), status)
 
         var old = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(sampleStatus())) as? [String: Any])
-        for key in ["networkProfile", "firewallShield", "batteryMinutesLeft", "chargerWatts", "chargerTooWeak", "reachable", "reach"] {
+        for key in ["networkProfile", "firewallShield", "batteryMinutesLeft", "chargerWatts", "chargerTooWeak", "reachable", "reach",
+                    "overnight", "overnightEnds", "diskFreeGB", "memoryPressure", "cpuPercent", "warnings"] {
             old.removeValue(forKey: key)
         }
         let decoded = try JSONDecoder().decode(AwakeStatus.self, from: JSONSerialization.data(withJSONObject: old))
@@ -95,7 +102,7 @@ final class ControlSocketTests: XCTestCase {
 
 final class ControlRequestTests: XCTestCase {
     func testSwitchesNeedAnExplicitOn() {
-        for command in [ControlCommand.move, .lidMode, .autoHotspot, .keepAwake] {
+        for command in [ControlCommand.move, .lidMode, .autoHotspot, .keepAwake, .overnight] {
             XCTAssertNotNil(ControlRequest(command).problem, "\(command) without on must be refused, not read as on")
             XCTAssertNil(ControlRequest(command, on: true).problem)
             XCTAssertNil(ControlRequest(command, on: false).problem)
@@ -123,6 +130,8 @@ final class ControlRequestTests: XCTestCase {
             ControlRequest(.keepAwake, on: false), ControlRequest(.keepAwake, on: true, minutes: 90),
             ControlRequest(.lidMode, on: true), ControlRequest(.lidMode, on: false), ControlRequest(.joinHotspot),
             ControlRequest(.autoHotspot, on: true), ControlRequest(.autoHotspot, on: false),
+            ControlRequest(.overnight, on: true), ControlRequest(.overnight, on: false),
+            ControlRequest(.overnight, on: true, end: .whenClaudeFinishes), ControlRequest(.overnight, on: true, end: .manually),
         ]
         for request in requests {
             XCTAssertNil(request.problem, "\(request)")
@@ -178,6 +187,32 @@ final class MCPHandlerTests: XCTestCase {
         XCTAssertEqual(result["isError"] as? Bool, false)
         let text = (result["content"] as? [[String: Any]])?.first?["text"] as? String ?? ""
         XCTAssertTrue(text.contains("On the Move is on."))
+    }
+
+    func testOvernightSendsItsEndOrLeavesItToSettings() throws {
+        let call: ([String: Any]) -> [String: Any]? = { arguments in
+            self.handler().reply(to: ["jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                                      "params": ["name": "awake_overnight", "arguments": arguments]])
+        }
+        _ = call(["on": true])
+        _ = call(["on": true, "ends": "when_claude_finishes"])
+        _ = call(["on": true, "ends": "when_turned_off"])
+        _ = call(["on": true, "ends": "morning"])
+        _ = call(["on": false])
+        XCTAssertEqual(sent, [ControlRequest(.overnight, on: true), ControlRequest(.overnight, on: true, end: .whenClaudeFinishes),
+                              ControlRequest(.overnight, on: true, end: .manually), ControlRequest(.overnight, on: true, end: .morning),
+                              ControlRequest(.overnight, on: false)])
+    }
+
+    func testOvernightRefusesAnUnknownEndOrAMissingOn() throws {
+        for arguments: [String: Any] in [["on": true, "ends": "tomorrow"], ["on": true, "ends": 9], ["ends": "morning"]] {
+            let reply = try XCTUnwrap(handler().reply(to: [
+                "jsonrpc": "2.0", "id": 10, "method": "tools/call",
+                "params": ["name": "awake_overnight", "arguments": arguments],
+            ]))
+            XCTAssertEqual((reply["result"] as? [String: Any])?["isError"] as? Bool, true, "\(arguments)")
+        }
+        XCTAssertTrue(sent.isEmpty)
     }
 
     func testTimedKeepAwakeNeedsMinutes() throws {

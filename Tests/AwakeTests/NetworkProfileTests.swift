@@ -303,12 +303,27 @@ private final class ShieldRunner: CommandRunning, @unchecked Sendable {
 final class ShortcutRunnerTests: XCTestCase {
     private final class Runner: CommandRunning, @unchecked Sendable {
         var status: Int32 = 0
+        var output = ""
         private(set) var calls: [[String]] = []
 
         func run(_ executable: String, _ arguments: [String]) -> CommandResult {
             calls.append([executable] + arguments)
-            return CommandResult(status: status, output: "")
+            return CommandResult(status: status, output: output)
         }
+    }
+
+    func testListsShortcutsSortedWithoutBlanksOrRepeats() {
+        let runner = Runner()
+        runner.output = "Public Wi-Fi\n\nAt Home\nfocus 10\nfocus 2\nAt Home\n"
+        XCTAssertEqual(ShortcutRunner(runner: runner, listRunner: runner).list(), ["At Home", "focus 2", "focus 10", "Public Wi-Fi"])
+        XCTAssertEqual(runner.calls, [["/usr/bin/shortcuts", "list"]])
+    }
+
+    func testAFailedListIsEmpty() {
+        let runner = Runner()
+        runner.status = 1
+        runner.output = "Error: not allowed"
+        XCTAssertEqual(ShortcutRunner(runner: runner, listRunner: runner).list(), [])
     }
 
     func testRunsTheShortcutByName() {
