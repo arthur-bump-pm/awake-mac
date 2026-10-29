@@ -275,7 +275,7 @@ struct SettingsContent: View {
             .buttonStyle(GhostButtonStyle())
             .frame(maxWidth: .infinity)
 
-        Text("Awake \(version) · Built on Insomnia by Karan Sangha · Fonts: DM Sans, Geist (OFL)")
+        Text("Awake \(version) · MIT License · Fonts: DM Sans, Geist (OFL)")
             .font(Theme.body(11))
             .foregroundStyle(Theme.slate)
             .frame(maxWidth: .infinity)

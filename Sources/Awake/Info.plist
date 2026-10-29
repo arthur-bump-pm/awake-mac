@@ -19,9 +19,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.0</string>
+	<string>1.0.1</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>2</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
 	<key>LSMinimumSystemVersion</key>
@@ -40,7 +40,7 @@
 		</dict>
 	</dict>
 	<key>NSHumanReadableCopyright</key>
-	<string>MIT License. Built on Insomnia © 2018 Karanvir Singh Sangha.</string>
+	<string>© 2026 Arthur Hwang. MIT License.</string>
 	<key>NSLocationUsageDescription</key>
 	<string>Awake reads Wi-Fi network names so it can tell your hotspot and trusted networks from public Wi-Fi. It never uses your location.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>

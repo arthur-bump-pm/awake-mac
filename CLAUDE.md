@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Awake is a macOS menu bar app for people who work from a laptop: four modes (Off, Keep awake, Overnight, On the Move), auto-hotspot failover and health warnings, all of which Claude Code can switch or read through MCP. Forked from [karansangha/Insomnia](https://github.com/karansangha/Insomnia) (MIT; keep the original copyright line).
+Awake is a macOS menu bar app for people who work from a laptop: four modes (Off, Keep awake, Overnight, On the Move), auto-hotspot failover and health warnings, all of which Claude Code can switch or read through MCP. Started as a fork of [karansangha/Insomnia](https://github.com/karansangha/Insomnia) (MIT): its copyright line must stay in `LICENSE`, which ships inside the app (`build_app.sh`); the README and the app don't credit it otherwise.
 
 ## Build & run
 

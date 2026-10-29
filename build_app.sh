@@ -21,6 +21,8 @@ cp "$PRODUCTS/$APP" "$BUNDLE/Contents/MacOS/$APP"
 cp "$PRODUCTS/awakectl" "$BUNDLE/Contents/MacOS/awakectl"
 cp "Sources/$APP/Info.plist" "$BUNDLE/Contents/Info.plist"
 cp Resources/AppIcon.icns "$BUNDLE/Contents/Resources/AppIcon.icns"
+# The MIT license (with every copyright line it requires) travels with the app.
+cp LICENSE "$BUNDLE/Contents/Resources/LICENSE"
 mkdir -p "$BUNDLE/Contents/Resources/Fonts"
 cp Resources/Fonts/* "$BUNDLE/Contents/Resources/Fonts/"
 codesign --force --sign - "$BUNDLE/Contents/MacOS/awakectl"

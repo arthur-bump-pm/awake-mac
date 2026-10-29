@@ -120,11 +120,11 @@ Turn off Launch at login in System Settings → General → Login Items if it's 
 
 | Version | Status | Highlights |
 |---|---|---|
+| **1.0.1** | ✅ released 2026-10-29 | Install with one line in Terminal or with Homebrew; the license now ships inside the app |
 | **1.0.0** | ✅ released 2026-10-29 | Four modes (Keep awake, Overnight, On the Move); a menu bar icon that shows the mode; welcome on first launch; health and battery warnings; café Wi-Fi sign-in detection; auto-hotspot; public Wi-Fi shield and switching back to trusted Wi-Fi; safety stop; `awakectl` and an MCP server for Claude Code |
 
 ## Credits
 
-- Built on [Insomnia](https://github.com/karansangha/Insomnia) by Karan Sangha (MIT).
 - Fonts: [DM Sans](https://github.com/googlefonts/dm-fonts) and [Geist](https://github.com/vercel/geist-font), both under the SIL Open Font License (license files in `Resources/Fonts`).
 
 MIT License. See [LICENSE](LICENSE).
