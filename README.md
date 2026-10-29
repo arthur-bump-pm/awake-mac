@@ -116,7 +116,6 @@ Turn off Launch at login in System Settings → General → Login Items if it's 
 ## Credits
 
 - Built on [Insomnia](https://github.com/karansangha/Insomnia) by Karan Sangha (MIT).
-- Visual style adapted from the Dimension style on [Refero](https://styles.refero.design).
 - Fonts: [DM Sans](https://github.com/googlefonts/dm-fonts) and [Geist](https://github.com/vercel/geist-font), both under the SIL Open Font License (license files in `Resources/Fonts`).
 
 MIT License. See [LICENSE](LICENSE).
