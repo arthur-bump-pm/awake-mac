@@ -43,10 +43,7 @@ struct SettingsContent: View {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
     }
 
-    /// The app's path is quoted, so it still works from a folder with a space in its name.
-    private var mcpCommand: String {
-        "claude mcp add --scope user awake -- \"\(model.appPath)/Contents/MacOS/awakectl\" mcp"
-    }
+    private var mcpCommand: String { model.mcpCommand }
 
     /// Setup gets a dot while a permission is missing: the admin permission (Overnight, On the Move) or Location for
     /// a feature that's on.
@@ -186,45 +183,18 @@ struct SettingsContent: View {
     }
 
     @ViewBuilder private var network: some View {
-        Card("Public Wi-Fi", footer: "Your hotspot always counts as trusted. Back on a trusted network, the firewall goes back to how it was.") {
+        Card("Wi-Fi", footer: "Your hotspot always counts as trusted. On any other Wi-Fi the shield turns on; back on a trusted network, the firewall goes back to how it was.") {
             SettingToggle(title: "Shield me on public Wi-Fi",
-                          detail: "Turns on the macOS firewall with stealth mode and points out sharing that's on.",
+                          detail: "The macOS firewall with stealth mode, and a heads-up about sharing that's on.",
                           isOn: $model.publicShield)
-            currentNetwork
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Trusted Wi-Fi")
-                    .font(Theme.body(13))
-                    .foregroundStyle(Theme.bone)
-                let trusted = model.trustedNetworks.filter { $0 != model.hotspotSSID }
-                if trusted.isEmpty, model.hotspotSSID.isEmpty {
-                    Text("None yet")
-                        .font(Theme.body(12))
-                        .foregroundStyle(Theme.slate)
-                }
-                ForEach(trusted, id: \.self) { name in
-                    HStack {
-                        Text(name)
-                            .font(Theme.body(12))
-                            .foregroundStyle(Theme.ash)
-                            .lineLimit(1)
-                        Spacer()
-                        Button("Remove") { model.untrust(name) }
-                            .buttonStyle(GhostButtonStyle())
-                            .accessibilityLabel("Remove \(name)")
-                    }
-                }
-                if !model.hotspotSSID.isEmpty {
-                    HStack {
-                        Text(model.hotspotSSID)
-                            .font(Theme.body(12))
-                            .foregroundStyle(Theme.ash)
-                            .lineLimit(1)
-                        Spacer()
-                        Text("Your hotspot")
-                            .font(Theme.body(11))
-                            .foregroundStyle(Theme.slate)
-                    }
-                }
+            SettingToggle(title: "Offer to switch to a trusted network",
+                          detail: "When one is in range while you're on your hotspot or public Wi-Fi.",
+                          isOn: $model.offerTrustedNetworks)
+            ListSection(title: "Connected") {
+                connectedRow
+            }
+            ListSection(title: "Trusted networks") {
+                trustedRows
             }
         }
 
@@ -300,6 +270,10 @@ struct SettingsContent: View {
             }
             .buttonStyle(GhostButtonStyle())
         }
+
+        Button("Show the welcome again") { model.openWelcome() }
+            .buttonStyle(GhostButtonStyle())
+            .frame(maxWidth: .infinity)
 
         Text("Awake \(version) · Built on Insomnia by Karan Sangha · Fonts: DM Sans, Geist (OFL)")
             .font(Theme.body(11))
@@ -405,32 +379,175 @@ struct SettingsContent: View {
         }
     }
 
-    private var currentNetwork: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("This network")
-                    .font(Theme.body(13))
-                    .foregroundStyle(Theme.bone)
-                Text(currentNetworkDetail)
-                    .font(Theme.body(11))
-                    .foregroundStyle(Theme.slate)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            Spacer()
-            if model.location.isAuthorized, model.profile == .public, model.wifi.ssid != nil {
-                Button("Trust") { model.trustCurrentNetwork() }
+    /// The Wi-Fi this Mac is on, whether it's trusted, and Trust for a public one.
+    @ViewBuilder private var connectedRow: some View {
+        if !model.location.isAuthorized {
+            ListRow(icon: "wifi.exclamationmark", title: "Needs Location access to see its name") {
+                Button("Setup") { tab = .setup }
                     .buttonStyle(GhostButtonStyle())
-                    .accessibilityLabel("Trust this network")
             }
+        } else if let ssid = model.wifi.ssid {
+            ListRow(icon: ssid == model.hotspotSSID ? "personalhotspot" : "wifi", title: ssid) {
+                if ssid == model.hotspotSSID {
+                    StatusBadge(text: "Your hotspot", color: Theme.online)
+                } else if model.profile == .home {
+                    StatusBadge(text: "Trusted", color: Theme.online)
+                } else {
+                    StatusBadge(text: "Public", color: Theme.attention)
+                    Button("Trust") { model.trustCurrentNetwork() }
+                        .buttonStyle(GhostButtonStyle())
+                        .accessibilityLabel("Trust \(ssid)")
+                }
+            }
+        } else {
+            ListRow(icon: "wifi.slash", title: model.wifi.isPoweredOn ? "Not on Wi-Fi" : "Wi-Fi is off", dimmed: true) {}
         }
     }
 
-    /// The status first, so "Public" or "Trusted" stays visible next to a long name.
-    private var currentNetworkDetail: String {
-        guard model.location.isAuthorized else { return "Needs Location access (Setup)" }
-        guard let ssid = model.wifi.ssid else { return "Not on Wi-Fi" }
-        return model.profile == .home ? "Trusted · \(ssid)" : "Public · \(ssid)"
+    /// Trusted networks, your hotspot, and a menu to add one in range.
+    @ViewBuilder private var trustedRows: some View {
+        let trusted = model.trustedNetworks.filter { $0 != model.hotspotSSID }
+        if trusted.isEmpty, model.hotspotSSID.isEmpty {
+            ListRow(icon: "wifi", title: "None yet", dimmed: true) {}
+        }
+        ForEach(trusted, id: \.self) { name in
+            ListRow(icon: "wifi", title: name) {
+                if name == model.wifi.ssid {
+                    StatusBadge(text: "Connected", color: Theme.online)
+                }
+                Button { model.untrust(name) } label: {
+                    Image(systemName: "minus.circle")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.ash)
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Remove")
+                .accessibilityLabel("Remove \(name)")
+            }
+        }
+        if !model.hotspotSSID.isEmpty {
+            ListRow(icon: "personalhotspot", title: model.hotspotSSID) {
+                StatusBadge(text: "Your hotspot", color: Theme.slate)
+            }
+        }
+        addNetworkRow
+    }
+
+    /// Networks in range that aren't trusted yet, to add without joining them first.
+    @ViewBuilder private var addNetworkRow: some View {
+        let label = Label("Add a network in range", systemImage: "plus.circle")
+            .font(Theme.body(13))
+            .foregroundStyle(Theme.ash)
+        if liveControls {
+            let candidates = model.nearbyNetworks.filter { !model.trustedNetworks.contains($0) && $0 != model.hotspotSSID }
+            Menu {
+                if !model.location.isAuthorized {
+                    Button("Allow Location access to list networks") { model.location.request() }
+                } else if candidates.isEmpty {
+                    Text("No other networks in range")
+                }
+                ForEach(candidates, id: \.self) { name in
+                    Button(name) { model.trust(name) }
+                }
+            } label: {
+                label
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
+            .modifier(RowDivider())
+            .onAppear { model.refreshNearbyNetworks() }
+        } else {
+            label
+                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
+                .modifier(RowDivider())
+        }
+    }
+}
+
+/// A labelled group of rows in one rounded box, with hairlines between the rows.
+struct ListSection<Rows: View>: View {
+    let title: String
+    @ViewBuilder let rows: Rows
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(Theme.body(12, weight: .medium))
+                .foregroundStyle(Theme.slate)
+                .accessibilityAddTraits(.isHeader)
+            // Each row draws a hairline on top; the first one sits under the box's own edge.
+            VStack(alignment: .leading, spacing: 0) {
+                rows
+            }
+            .padding(.top, -1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.void.opacity(0.45))
+            .clipShape(RoundedRectangle(cornerRadius: Theme.fieldRadius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.fieldRadius, style: .continuous).strokeBorder(Theme.hairline))
+        }
+    }
+}
+
+/// The hairline over each row of a `ListSection`, starting after the icon column.
+struct RowDivider: ViewModifier {
+    func body(content: Content) -> some View {
+        content.overlay(alignment: .top) {
+            Rectangle().fill(Theme.hairline).frame(height: 1).padding(.leading, 40)
+        }
+    }
+}
+
+/// One row: an icon, a name, and whatever goes on the right (a badge, a button).
+struct ListRow<Trailing: View>: View {
+    let icon: String
+    let title: String
+    var dimmed = false
+    @ViewBuilder let trailing: Trailing
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.ash)
+                .frame(width: 18)
+                .accessibilityHidden(true)
+            Text(title)
+                .font(Theme.body(13))
+                .foregroundStyle(dimmed ? Theme.slate : Theme.bone)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 8)
+            trailing
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 38)
+        .modifier(RowDivider())
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// A small status pill: a coloured dot and a word.
+struct StatusBadge: View {
+    let text: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 6, height: 6)
+            Text(text)
+                .font(Theme.body(11, weight: .medium))
+                .foregroundStyle(Theme.ash)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .overlay(Capsule().strokeBorder(Theme.hairline))
+        .fixedSize()
     }
 }
 
@@ -476,7 +593,7 @@ private struct TabBar: View {
 }
 
 /// A switch with a short title and, under it, one line on what it does.
-private struct SettingToggle: View {
+struct SettingToggle: View {
     let title: String
     let detail: String?
     @Binding var isOn: Bool
@@ -530,7 +647,7 @@ private struct ChoiceRow<Chips: View>: View {
 }
 
 /// A field (or fields) with a visible label on the left, 110 pt wide so the fields line up.
-private struct LabeledRow<Content: View>: View {
+struct LabeledRow<Content: View>: View {
     let label: String
     @ViewBuilder let content: Content
 
@@ -549,7 +666,7 @@ private struct LabeledRow<Content: View>: View {
 }
 
 /// A permission's state: a check mark once granted, otherwise the button that asks for it.
-private struct PermissionRow: View {
+struct PermissionRow: View {
     let title: String
     let detail: String
     let granted: Bool
@@ -617,7 +734,7 @@ private struct Card<Content: View>: View {
     }
 }
 
-private struct Field: View {
+struct Field: View {
     let title: String
     @Binding var text: String
     let prompt: String
@@ -635,7 +752,7 @@ private struct Field: View {
 }
 
 /// A field drawn as plain text, for off-screen previews (see `liveControls`).
-private struct FieldStandIn: View {
+struct FieldStandIn: View {
     let text: String
     let prompt: String
 
@@ -648,7 +765,7 @@ private struct FieldStandIn: View {
     }
 }
 
-private struct FieldStyle: ViewModifier {
+struct FieldStyle: ViewModifier {
     func body(content: Content) -> some View {
         content
             .textFieldStyle(.plain)

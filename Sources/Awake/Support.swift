@@ -20,6 +20,7 @@ enum AwakeMain {
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var panel: StatusPanelController?
     private var settings: SettingsWindowController?
+    private var onboarding: OnboardingWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Theme.registerFonts()
@@ -29,7 +30,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let settings = SettingsWindowController(model: model)
         self.settings = settings
         panel = StatusPanelController(model: model) { settings.show() }
+        let onboarding = OnboardingWindowController(model: model)
+        self.onboarding = onboarding
+        model.openWelcome = { onboarding.show() }
         model.start()
+        if !model.didOnboard {
+            onboarding.show()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -77,6 +84,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 await model.setModeFromMenu(.onTheMove)
             case .backAtDesk:
                 await model.endMoveFromMenu()
+            case .switchWiFi:
+                if let ssid = response.notification.request.content.userInfo["ssid"] as? String {
+                    await model.switchToTrusted(ssid)
+                }
             case nil:
                 panel?.show()
             }
@@ -88,50 +99,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 /// The menu bar eyes, one template image per openness step (`EyeTransition.steps` + 1 frames), each drawn
 /// on first use and reused for every later animation.
 enum MenuBarIcon {
-    private static var cache: [Int: NSImage] = [:]
+    private static var cache: [GlyphFrame: NSImage] = [:]
 
-    static func image(step: Int) -> NSImage {
-        if let image = cache[step] { return image }
-        let openness = CGFloat(EyeTransition.openness(ofStep: step))
-        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { rect in
+    /// The 18 pt menu bar image for a frame, drawn once and cached.
+    static func image(_ frame: GlyphFrame) -> NSImage {
+        if let image = cache[frame] { return image }
+        let image = image(frame, size: 18)
+        image.accessibilityDescription = "Awake"
+        cache[frame] = image
+        return image
+    }
+
+    /// The glyph drawn at `size` points (not scaled up from 18), as a template image: for onboarding and previews.
+    static func image(_ frame: GlyphFrame, size: CGFloat) -> NSImage {
+        let detail: AwakeMark.Detail = switch frame.accent {
+        case .none: .none
+        case .moon: .moon
+        case .speedLines: .speedLines
+        }
+        let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
             ctx.setFillColor(.black)
             ctx.setStrokeColor(.black)
-            AwakeMark.drawGlyph(in: ctx, rect: rect, openness: openness)
+            AwakeMark.drawGlyph(in: ctx, rect: rect, openness: CGFloat(frame.openness), detail: detail,
+                                amount: CGFloat(frame.amount))
             return true
         }
         image.isTemplate = true
-        image.accessibilityDescription = "Awake"
-        cache[step] = image
         return image
     }
 }
 
 enum Notifier {
     enum Category: String {
-        case signIn, leftDesk, backAtDesk
+        case signIn, leftDesk, backAtDesk, trustedNearby
     }
 
     enum Action: String {
         case signIn = "SIGN_IN"
         case turnOnMove = "TURN_ON_MOVE"
         case backAtDesk = "BACK_AT_DESK"
+        case switchWiFi = "SWITCH_WIFI"
     }
 
-    static func setUp() {
+    /// Registers the actions; `askPermission` false waits for the welcome to close (see `askPermission()`).
+    static func setUp(askPermission: Bool = true) {
         let center = UNUserNotificationCenter.current()
         center.setNotificationCategories([
             category(.signIn, .signIn, "Sign In"),
             category(.leftDesk, .turnOnMove, "Turn On the Move"),
             category(.backAtDesk, .backAtDesk, "Turn Off On the Move"),
+            category(.trustedNearby, .switchWiFi, "Switch"),
         ])
-        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        if askPermission {
+            Self.askPermission()
+        }
     }
 
-    static func post(title: String, body: String, category: Category? = nil) {
+    static func askPermission() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    static func post(title: String, body: String, category: Category? = nil, userInfo: [String: String] = [:]) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
+        content.userInfo = userInfo
         if let category {
             content.categoryIdentifier = category.rawValue
         }

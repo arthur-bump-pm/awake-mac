@@ -35,7 +35,7 @@ struct PanelView: View {
         VStack(alignment: .leading, spacing: 12) {
             header
             ForEach(model.alerts) { alert in
-                AlertRow(alert: alert) { Task { await model.perform(alert) } }
+                AlertRow(alert: alert, action: { Task { await model.perform(alert) } }, dismiss: { model.dismiss(alert) })
             }
             modes
             footer
@@ -201,10 +201,25 @@ private struct ModeRow: View {
 private struct AlertRow: View {
     let alert: PanelAlert
     let action: () -> Void
+    let dismiss: () -> Void
 
     var body: some View {
         Group {
-            if let title = alert.action {
+            if let title = alert.action, alert.dismissible {
+                // Two buttons: the message gets the whole row, the buttons go under it.
+                VStack(alignment: .leading, spacing: 8) {
+                    message
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(spacing: 8) {
+                        Spacer(minLength: 0)
+                        Button("Not now", action: dismiss)
+                            .buttonStyle(GhostButtonStyle())
+                        Button(title, action: action)
+                            .buttonStyle(PillButtonStyle())
+                            .accessibilityLabel(alert.spokenAction ?? title)
+                    }
+                }
+            } else if let title = alert.action {
                 HStack(spacing: 10) {
                     message
                     Spacer(minLength: 6)

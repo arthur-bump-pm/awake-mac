@@ -29,13 +29,19 @@ enum DevPreview {
                 try save(SettingsContent(model: model, tab: tab, scrolls: false).environment(\.liveControls, false)
                             .frame(width: 520).background(Theme.void), to: directory, name: "settings-\(tab.title.lowercased()).png")
             }
+            try save(GlyphSheet(), to: directory, name: "glyphs.png")
+            let firstLaunch = AppModel.preview(.firstLaunch)
+            for step in OnboardingStep.allCases {
+                try save(OnboardingView(model: firstLaunch, step: step).environment(\.liveControls, false), to: directory,
+                         name: "welcome-\(step.rawValue + 1).png")
+            }
             // The calm sample has no admin permission yet: the Setup tab's dot and its Set Up button.
             try save(SettingsContent(model: calm, tab: .setup, scrolls: false).environment(\.liveControls, false)
                         .frame(width: 520).background(Theme.void), to: directory, name: "settings-setup-needed.png")
         } catch {
             fail("Awake: can't write the preview to \(directory.path): \(error.localizedDescription)")
         }
-        print("Wrote panel.png, panel-calm.png and settings-<tab>.png to \(directory.path)")
+        print("Wrote panel.png, panel-calm.png, glyphs.png, welcome-<n>.png and settings-<tab>.png to \(directory.path)")
         exit(0)
     }
 
@@ -102,6 +108,8 @@ struct PreviewSample {
     /// The firewall shield is up (public Wi-Fi).
     var shielded = true
     var busyProcess: String?
+    /// A trusted network in range, offered from the public Wi-Fi.
+    var trustedOffer: String? = "Studio 5G"
 
     static var calm: PreviewSample {
         var sample = PreviewSample()
@@ -115,13 +123,64 @@ struct PreviewSample {
         sample.sharingOn = []
         sample.lastFailure = nil
         sample.healthWarnings = []
+        sample.trustedOffer = nil
         sample.shielded = false
         sample.adminPermission = false
         sample.power = PowerReading(percent: 82, onBattery: true, externalConnected: false, isCharging: false,
                                     minutesLeft: 190, drawWatts: 7, adapterWatts: nil)
         return sample
     }
+
+    /// A Mac that just installed Awake: no admin permission, nothing trusted, no hotspot chosen.
+    static var firstLaunch: PreviewSample {
+        var sample = PreviewSample.calm
+        sample.trustedNetworks = []
+        sample.hotspot = ""
+        sample.keepAwake = .off
+        sample.claudeSessions = 0
+        sample.publicShortcut = ""
+        return sample
+    }
 }
+
+/// The menu bar glyph in each mode, as the app draws it, on light and dark menu bars at 1x and 4x.
+private struct GlyphSheet: View {
+    private let states: [(String, GlyphFrame)] = [
+        ("Off", GlyphPose.asleep.frame),
+        ("Keep awake", GlyphPose(openness: 1, accent: .none, amount: 0).frame),
+        ("Overnight", GlyphPose(openness: 1, accent: .moon, amount: 1).frame),
+        ("On the Move", GlyphPose(openness: 1, accent: .speedLines, amount: 1).frame),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ForEach([false, true], id: \.self) { dark in
+                HStack(spacing: 18) {
+                    ForEach(states, id: \.0) { name, frame in
+                        VStack(spacing: 8) {
+                            glyph(frame, size: 18, dark: dark)
+                            glyph(frame, size: 72, dark: dark)
+                            Text(name)
+                                .font(Theme.body(11))
+                                .foregroundStyle(dark ? Theme.ash : Color(hex: 0x3a3a3c))
+                        }
+                    }
+                }
+                .padding(14)
+                .background(RoundedRectangle(cornerRadius: 12).fill(dark ? Color(hex: 0x2b2b2e) : Color(hex: 0xe9e9eb)))
+            }
+        }
+        .padding(20)
+        .background(Theme.void)
+    }
+
+    private func glyph(_ frame: GlyphFrame, size: CGFloat, dark: Bool) -> some View {
+        Image(nsImage: MenuBarIcon.image(frame, size: size))
+            .renderingMode(.template)
+            .foregroundStyle(dark ? Color(hex: 0xf5f5f7) : Color(hex: 0x1d1d1f))
+    }
+}
+
 
 /// UserDefaults kept in memory only. Every read and write is overridden, so nothing reaches the user's settings
 /// (a suite's search list would otherwise fall through to the app's own domain).

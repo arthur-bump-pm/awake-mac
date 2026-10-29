@@ -12,11 +12,11 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
     private let model: AppModel
     private var outsideClickMonitor: Any?
     private var changes: AnyCancellable?
-    // The menu bar eyes: the openness on screen, the transition in flight, the timer driving it, the frame shown.
-    private var eyeOpenness: Double = 0
-    private var eyeTransition: EyeTransition?
-    private var eyeTimer: Timer?
-    private var eyeStep: Int?
+    // The menu bar glyph: the pose on screen, the animation in flight, the timer driving it, the frame shown.
+    private var glyphPose = GlyphPose.asleep
+    private var glyphAnimation: GlyphAnimation?
+    private var glyphTimer: Timer?
+    private var glyphFrame: GlyphFrame?
     /// The state the menu bar button last told VoiceOver and its tooltip.
     private var statusShown: String?
 
@@ -39,8 +39,8 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
             button.action = #selector(toggle)
             button.setAccessibilityLabel("Awake")
         }
-        eyeOpenness = eyesTarget
-        showEyes(eyeOpenness)
+        glyphPose = GlyphAnimation(from: .asleep, open: eyesOpen, accent: accent, start: 0, reduceMotion: true).target
+        showGlyph(glyphPose)
         describeStatus()
         changes = model.objectWillChange
             .receive(on: RunLoop.main)
@@ -107,8 +107,17 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
     }
 
     /// Open while anything keeps the Mac awake (On the Move included), closed otherwise.
-    private var eyesTarget: Double {
-        model.onTheMove || model.isKeepingAwake ? 1 : 0
+    private var eyesOpen: Bool {
+        model.onTheMove || model.isKeepingAwake
+    }
+
+    /// The mode's detail on the open eyes: a moon for Overnight, speed lines for On the Move, none for Keep awake.
+    private var accent: GlyphAccent {
+        switch model.mode {
+        case .overnight: .moon
+        case .onTheMove: .speedLines
+        case .off, .keepAwake: .none
+        }
     }
 
     /// Tells VoiceOver (the button's value) and the tooltip what Awake is doing, whenever that changes.
@@ -120,46 +129,48 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         button.toolTip = status == "Off" ? "Awake is off" : "Awake: \(status)"
     }
 
-    /// Animates the eyes toward the current state, continuing from wherever they are; Reduce Motion jumps.
+    /// Animates the glyph toward the current state, continuing from wherever it is; Reduce Motion jumps. Each
+    /// change plays once (the eyes, then the mode's detail) and then holds still.
     private func updateIcon() {
         describeStatus()
-        let target = eyesTarget
-        guard target != (eyeTransition?.to ?? eyeOpenness) else { return }
         let now = ProcessInfo.processInfo.systemUptime
-        eyeOpenness = eyeTransition?.openness(at: now) ?? eyeOpenness
-        eyeTransition = EyeTransition(from: eyeOpenness, to: target, start: now,
-                                      reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
-        stepEyes()
-        if eyeTransition != nil, eyeTimer == nil {
-            let timer = Timer(timeInterval: EyeTransition.frameInterval, target: self, selector: #selector(stepEyes),
+        let current = glyphAnimation?.pose(at: now) ?? glyphPose
+        let animation = GlyphAnimation(from: current, open: eyesOpen, accent: accent, start: now,
+                                       reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        guard animation.target != (glyphAnimation?.target ?? glyphPose) else { return }
+        glyphPose = current
+        glyphAnimation = animation
+        stepGlyph()
+        if glyphAnimation != nil, glyphTimer == nil {
+            let timer = Timer(timeInterval: EyeTransition.frameInterval, target: self, selector: #selector(stepGlyph),
                               userInfo: nil, repeats: true)
             RunLoop.main.add(timer, forMode: .common)
-            eyeTimer = timer
+            glyphTimer = timer
         }
     }
 
-    @objc private func stepEyes() {
-        guard let transition = eyeTransition else { return stopEyes() }
+    @objc private func stepGlyph() {
+        guard let animation = glyphAnimation else { return stopGlyph() }
         let now = ProcessInfo.processInfo.systemUptime
-        eyeOpenness = transition.openness(at: now)
-        showEyes(eyeOpenness)
-        if transition.isFinished(at: now) {
-            stopEyes()
+        glyphPose = animation.pose(at: now)
+        showGlyph(glyphPose)
+        if animation.isFinished(at: now) {
+            stopGlyph()
         }
     }
 
-    private func stopEyes() {
-        eyeTransition = nil
-        eyeTimer?.invalidate()
-        eyeTimer = nil
+    private func stopGlyph() {
+        glyphAnimation = nil
+        glyphTimer?.invalidate()
+        glyphTimer = nil
     }
 
-    /// Sets the cached frame for this openness, only when it differs from the one shown.
-    private func showEyes(_ openness: Double) {
-        let step = EyeTransition.step(for: openness)
-        guard step != eyeStep else { return }
-        eyeStep = step
-        statusItem.button?.image = MenuBarIcon.image(step: step)
+    /// Sets the cached frame for this pose, only when it differs from the one shown.
+    private func showGlyph(_ pose: GlyphPose) {
+        let frame = pose.frame
+        guard frame != glyphFrame else { return }
+        glyphFrame = frame
+        statusItem.button?.image = MenuBarIcon.image(frame)
     }
 }
 
@@ -183,6 +194,42 @@ final class FloatingPanel: NSPanel {
 
     override func cancelOperation(_ sender: Any?) {
         onCancel?()
+    }
+}
+
+/// The welcome window: on first launch and from Settings. Closing it counts as done, like Start Using Awake.
+@MainActor
+final class OnboardingWindowController: NSObject, NSWindowDelegate {
+    private let model: AppModel
+    private var window: NSWindow?
+
+    init(model: AppModel) {
+        self.model = model
+    }
+
+    func show() {
+        if window == nil {
+            let view = OnboardingView(model: model) { [weak self] in self?.window?.close() }
+            let window = NSWindow(contentViewController: NSHostingController(rootView: view))
+            window.title = "Welcome to Awake"
+            window.styleMask = [.titled, .closable, .fullSizeContentView]
+            window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
+            window.appearance = NSAppearance(named: .darkAqua)
+            window.backgroundColor = NSColor(srgbRed: 0.04, green: 0.04, blue: 0.04, alpha: 1)
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            window.center()
+            self.window = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        model.finishOnboarding()
+        // A fresh window next time starts on the first step.
+        window = nil
     }
 }
 

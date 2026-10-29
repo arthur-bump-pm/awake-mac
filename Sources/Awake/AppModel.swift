@@ -117,12 +117,18 @@ struct PanelAlert: Identifiable, Equatable {
         case weakCharger
         case joinHotspot
         case health(HealthWarning.Kind)
+        /// A trusted network is in range: switch to it, or "Not now".
+        case trustedNearby(String)
     }
 
     let kind: Kind
     let message: String
     /// The button's title; nil for a warning with nothing to press.
     let action: String?
+    /// Shows a "Not now" button that hides it (see `AppModel.dismiss`).
+    var dismissible = false
+    /// What VoiceOver says for the button when its title alone is vague.
+    var spokenAction: String?
     var id: String { message }
 }
 
@@ -164,6 +170,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var reachChecked = false
     @Published private(set) var power: PowerReading
     @Published private(set) var nearbyNetworks: [String] = []
+    /// A trusted network in range to offer switching to (see `TrustedReturn`), or nil.
+    @Published private(set) var trustedOffer: String?
     /// The user's shortcuts, for Settings to pick from; read when Settings opens.
     @Published private(set) var installedShortcuts: [String] = []
     @Published private(set) var otherAwakeApps: [String] = []
@@ -198,6 +206,12 @@ final class AppModel: ObservableObject {
     }
     @Published var overnightHour: Int {
         didSet { defaults.set(overnightHour, forKey: Keys.overnightHour) }
+    }
+    @Published var offerTrustedNetworks: Bool {
+        didSet {
+            defaults.set(offerTrustedNetworks, forKey: Keys.offerTrusted)
+            showTrustedOffer()
+        }
     }
     @Published var healthWarningsOn: Bool {
         didSet {
@@ -304,6 +318,8 @@ final class AppModel: ObservableObject {
         static let overnightHour = "overnightHour"
         static let healthWarnings = "healthWarnings"
         static let lastKeepAwake = "lastKeepAwake"
+        static let offerTrusted = "offerTrustedNetworks"
+        static let onboarded = "onboarded"
     }
 
     /// What On the Move changed, so "back at desk" can put it back. Optional fields are only
@@ -340,6 +356,8 @@ final class AppModel: ObservableObject {
     private let sharingCheck = SharingCheck()
     private var powerAlerts = PowerAlerts()
     private var healthWatch = HealthWatch(cores: ProcessInfo.processInfo.activeProcessorCount)
+    private var trustedReturn = TrustedReturn()
+    private var isScanningForTrusted = false
     /// The last definite profile, held through short moments without a Wi-Fi name (waking, roaming) so the shield
     /// doesn't drop and come back; lapses after 10 minutes of unknown or when Wi-Fi is off. Starts unknown at launch.
     private var profileHold = ProfileHold()
@@ -405,6 +423,7 @@ final class AppModel: ObservableObject {
         defaults.register(defaults: [Keys.returnToWiFi: true, Keys.safety: true, Keys.moveLowPower: true,
                                      Keys.moveShield: true, Keys.deskSuggestions: true, Keys.publicShield: true,
                                      Keys.outletWarningMinutes: PowerAlerts.defaultWarning, Keys.healthWarnings: true,
+                                     Keys.offerTrusted: true,
                                      Keys.overnightHour: OvernightSession.defaultMorningHour,
                                      Keys.lastKeepAwake: KeepAwakeOption.indefinitely.stored])
         onTheMove = defaults.bool(forKey: Keys.onTheMove)
@@ -414,6 +433,7 @@ final class AppModel: ObservableObject {
         let hour = defaults.integer(forKey: Keys.overnightHour)
         overnightHour = OvernightSession.morningChoices.contains(hour) ? hour : OvernightSession.defaultMorningHour
         healthWarningsOn = defaults.bool(forKey: Keys.healthWarnings)
+        offerTrustedNetworks = defaults.bool(forKey: Keys.offerTrusted)
         autoHotspot = defaults.bool(forKey: Keys.autoHotspot)
         hotspotSSID = defaults.string(forKey: Keys.hotspotSSID) ?? ""
         returnToWiFi = defaults.bool(forKey: Keys.returnToWiFi)
@@ -435,6 +455,10 @@ final class AppModel: ObservableObject {
         Publishers.Merge3(keepAwake.objectWillChange, lidMode.objectWillChange, location.objectWillChange)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        // Wi-Fi names appear as soon as Location access is allowed (the welcome's Wi-Fi step shows the network).
+        location.$status.dropFirst().removeDuplicates()
+            .sink { [weak self] _ in Task { @MainActor in self?.checkSoon() } }
+            .store(in: &cancellables)
     }
 
     func start() {
@@ -451,7 +475,7 @@ final class AppModel: ObservableObject {
             NSLog("Awake: control socket unavailable: \(error.localizedDescription)")
         }
 
-        Notifier.setUp()
+        Notifier.setUp(askPermission: didOnboard)
         adoptLegacyFirewallSnapshot()
         if !defaults.bool(forKey: Keys.didRegisterLoginItem) {
             defaults.set(true, forKey: Keys.didRegisterLoginItem)
@@ -544,6 +568,7 @@ final class AppModel: ObservableObject {
         refreshReach(sharing: true)
         refreshFirewall()
         checkSoon()
+        scanForTrustedIfDue()
     }
 
     // MARK: - Status
@@ -722,6 +747,11 @@ final class AppModel: ObservableObject {
             alerts.append(PanelAlert(kind: .locationAccess, message: locationProblem + ".",
                                      action: location.isDenied ? "Open Settings" : "Allow"))
         }
+        if let ssid = trustedOffer {
+            let question = isOnHotspot ? "Switch from your hotspot?" : wifi.ssid == nil ? "Join it?" : "Switch from this public Wi-Fi?"
+            alerts.append(PanelAlert(kind: .trustedNearby(ssid), message: "\(ssid) is in range. \(question)", action: "Switch",
+                                     dismissible: true, spokenAction: "Switch to \(ssid)"))
+        }
         if connectivity == .offline, hotspotIsConfigured, canJoinHotspotNow {
             alerts.append(PanelAlert(kind: .joinHotspot, message: "No internet. Your hotspot, \(hotspotSSID), can take over.",
                                      action: "Join"))
@@ -782,7 +812,16 @@ final class AppModel: ObservableObject {
             NSWorkspace.shared.open(Self.storageSettingsURL)
         case .health(.memory), .health(.cpu):
             NSWorkspace.shared.open(Self.activityMonitorURL)
+        case .trustedNearby(let ssid):
+            await switchToTrusted(ssid)
         }
+    }
+
+    /// "Not now" on a dismissible alert.
+    func dismiss(_ alert: PanelAlert) {
+        guard case .trustedNearby(let ssid) = alert.kind else { return }
+        trustedReturn.decline(ssid)
+        showTrustedOffer()
     }
 
     static let storageSettingsURL = URL(string: "x-apple.systempreferences:com.apple.settings.Storage")!
@@ -849,6 +888,9 @@ final class AppModel: ObservableObject {
         }
         if profile == .public, !sharingOn.isEmpty {
             sentences.append("Sharing is on: \(sharingOn.map(\.title).joined(separator: ", ")).")
+        }
+        if let trustedOffer {
+            sentences.append("\(trustedOffer), a trusted network, is in range; the user can switch to it from Awake's menu.")
         }
         if !otherAwakeApps.isEmpty {
             let names = otherAwakeApps.joined(separator: ", ")
@@ -1382,7 +1424,12 @@ final class AppModel: ObservableObject {
     // MARK: - Home vs public
 
     func trustCurrentNetwork() {
-        guard let ssid = wifi.ssid, !trustedNetworks.contains(ssid) else { return }
+        guard let ssid = wifi.ssid else { return }
+        trust(ssid)
+    }
+
+    func trust(_ ssid: String) {
+        guard !ssid.isEmpty, !trustedNetworks.contains(ssid) else { return }
         trustedNetworks.append(ssid)
     }
 
@@ -1393,6 +1440,7 @@ final class AppModel: ObservableObject {
     /// Re-decides the profile. A change of the held profile moves the shield and re-checks reach and sharing; a
     /// change to home or public also runs that profile's shortcut (once per change, also across relaunches).
     private func updateProfile() {
+        updateTrustedOffer()
         let decided = NetworkProfile.decide(ssid: wifi.ssid, trusted: trustedNetworks, hotspot: hotspotSSID)
         if profile != decided {
             profile = decided
@@ -1614,6 +1662,28 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - Onboarding
+
+    /// Opens the welcome window; the app delegate sets it.
+    var openWelcome: () -> Void = {}
+
+    /// The welcome window has been through once (finished or closed).
+    var didOnboard: Bool { defaults.bool(forKey: Keys.onboarded) }
+
+    /// Closing the welcome: macOS's notification prompt comes now, not on top of the welcome.
+    func finishOnboarding() {
+        let first = !didOnboard
+        defaults.set(true, forKey: Keys.onboarded)
+        if first, !isPreview {
+            Notifier.askPermission()
+        }
+    }
+
+    /// Adds Awake's MCP server to Claude Code. The app's path is quoted, so it works from a folder with a space.
+    var mcpCommand: String {
+        "claude mcp add --scope user awake -- \"\(appPath)/Contents/MacOS/awakectl\" mcp"
+    }
+
     // MARK: - Launch at login
 
     var launchAtLogin: Bool {
@@ -1809,28 +1879,90 @@ final class AppModel: ObservableObject {
 
     private func goBack(to home: String) async {
         let wifiControl = self.wifiControl
-        let success = await Task.detached { () -> Bool in
-            do {
-                try wifiControl.join(ssid: home, password: nil)
-                return true
-            } catch WiFiError.notFound {
-                return false
-            } catch {
-                // Joining needs the saved password, which only macOS holds: step off the
-                // hotspot and let macOS auto-join its preferred network.
-                wifiControl.disconnect()
-                for _ in 0..<10 {
-                    try? await Task.sleep(for: .seconds(1))
-                    if wifiControl.state().ssid == home { return true }
-                }
-                return false
-            }
-        }.value
+        let success = await joinKnownNetwork(home)
         engine.returnAttempted(success: success, now: .now)
         if success {
             Notifier.post(title: "Back on \(home)", body: "Awake left the hotspot to save your phone's data.")
         }
         wifi = await Task.detached { wifiControl.state() }.value
+    }
+
+    /// Joins a network macOS knows. Joining needs its saved password, which only macOS holds: when a plain join can't,
+    /// it steps off the current network and waits up to 10 s for macOS to auto-join its preferred one, but only for a
+    /// network macOS has saved; otherwise it would just drop the current one.
+    private func joinKnownNetwork(_ ssid: String) async -> Bool {
+        let wifiControl = self.wifiControl
+        return await Task.detached { () -> Bool in
+            do {
+                try wifiControl.join(ssid: ssid, password: nil)
+                return true
+            } catch WiFiError.notFound {
+                return false
+            } catch {
+                guard wifiControl.isSaved(ssid) else { return false }
+                wifiControl.disconnect()
+                for _ in 0..<10 {
+                    try? await Task.sleep(for: .seconds(1))
+                    if wifiControl.state().ssid == ssid { return true }
+                }
+                return false
+            }
+        }.value
+    }
+
+    // MARK: - Trusted Wi-Fi nearby
+
+    /// Ends the offer's episode once there's nothing to switch from or to; every network check.
+    private func updateTrustedOffer() {
+        trustedReturn.observe(current: wifi.ssid, wifiOn: wifi.isPoweredOn, trusted: trustedNetworks, hotspot: hotspotSSID)
+        showTrustedOffer()
+    }
+
+    private func showTrustedOffer() {
+        let shown = offerTrustedNetworks ? trustedReturn.offer : nil
+        if trustedOffer != shown { trustedOffer = shown }
+    }
+
+    /// Looks for a trusted network in range when one is worth offering (`TrustedReturn` paces the scans), off the
+    /// main actor. Needs Location access: without it macOS hides the names.
+    private func scanForTrustedIfDue() {
+        guard !isPreview, offerTrustedNetworks, location.isAuthorized, !isScanningForTrusted,
+              trustedReturn.shouldScan(current: wifi.ssid, wifiOn: wifi.isPoweredOn, trusted: trustedNetworks,
+                                       hotspot: hotspotSSID, now: .now) else { return }
+        isScanningForTrusted = true
+        let wifiControl = self.wifiControl
+        Task {
+            let nearby = await Task.detached { wifiControl.nearbyNetworkNames() }.value
+            isScanningForTrusted = false
+            if nearbyNetworks != nearby { nearbyNetworks = nearby }
+            let ask = trustedReturn.scanned(nearby: nearby, current: wifi.ssid, trusted: trustedNetworks,
+                                            hotspot: hotspotSSID, now: .now)
+            showTrustedOffer()
+            guard let ssid = ask, offerTrustedNetworks else { return }
+            Notifier.post(title: "\(ssid) is in range", body: trustedOfferQuestion, category: .trustedNearby,
+                          userInfo: ["ssid": ssid])
+        }
+    }
+
+    /// What switching would leave: the hotspot, public Wi-Fi, or nothing.
+    private var trustedOfferQuestion: String {
+        if isOnHotspot { return "Switch from your hotspot to save its data?" }
+        return wifi.ssid == nil ? "Join it?" : "Switch from this public Wi-Fi?"
+    }
+
+    /// From the panel or the notification's Switch button. Only while that offer stands: a notification can be tapped
+    /// hours later, after macOS joined the network itself or somewhere it isn't in range.
+    func switchToTrusted(_ ssid: String) async {
+        guard trustedOffer == ssid, trustedNetworks.contains(ssid), wifi.ssid != ssid else { return }
+        let joined = await joinKnownNetwork(ssid)
+        let wifiControl = self.wifiControl
+        wifi = await Task.detached { wifiControl.state() }.value
+        if joined {
+            lastFailure = nil
+        } else {
+            lastFailure = "Couldn't switch to \(ssid). Join it once from the Wi-Fi menu in the menu bar, so macOS saves it."
+        }
+        checkSoon()
     }
 
     // MARK: - Housekeeping: desk, awake watch, guard, end conditions
@@ -1848,6 +1980,7 @@ final class AppModel: ObservableObject {
         if shield.isUp {
             refreshFirewall()
         }
+        scanForTrustedIfDue()
         if shield.step(wanted: shieldWanted) != .none {
             shieldSoon()  // retries a raise or lower that didn't finish
         }
@@ -2011,7 +2144,7 @@ final class AppModel: ObservableObject {
     private func showPreview(_ sample: PreviewSample) {
         launchAtLogin = true
         hotspotSSID = sample.hotspot
-        autoHotspot = true
+        autoHotspot = !sample.hotspot.isEmpty
         trustedNetworks = sample.trustedNetworks
         publicShortcut = sample.publicShortcut
         wifi = WiFiState(isPoweredOn: true, ssid: sample.wifiName)
@@ -2033,5 +2166,6 @@ final class AppModel: ObservableObject {
         overnight = sample.overnight
         healthWarnings = sample.healthWarnings
         busyProcess = sample.busyProcess
+        trustedOffer = sample.trustedOffer
     }
 }

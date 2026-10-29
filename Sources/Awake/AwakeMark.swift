@@ -167,10 +167,43 @@ enum AwakeMark {
         return out
     }
 
+    /// A mode's detail on the open eyes (the app maps its modes to these).
+    enum Detail {
+        /// Keep awake: the plain eyes.
+        case none
+        /// Overnight: a crescent moon top right.
+        case moon
+        /// On the Move: the eyes slide right and glance ahead, with speed lines behind.
+        case speedLines
+    }
+
+    /// Where the open eyes sit, in glyph units (y up): size, the pair's centre, and how far the pupils look right.
+    private struct EyeLayout {
+        var scale: CGFloat, x: CGFloat, y: CGFloat, glance: CGFloat
+
+        static let plain = EyeLayout(scale: 1, x: 9, y: 8.6, glance: 0)
+
+        static func `for`(_ detail: Detail) -> EyeLayout {
+            switch detail {
+            case .none: plain
+            // Smaller and lower left, leaving the top right to the moon.
+            case .moon: EyeLayout(scale: 0.84, x: 8.4, y: 6.3, glance: 0)
+            // Smaller and slid right, leaving the left to the speed lines.
+            case .speedLines: EyeLayout(scale: 0.82, x: 11.3, y: 8.4, glance: 0.55)
+            }
+        }
+
+        func mixed(with other: EyeLayout, _ t: CGFloat) -> EyeLayout {
+            EyeLayout(scale: scale + (other.scale - scale) * t, x: x + (other.x - x) * t, y: y + (other.y - y) * t,
+                      glance: glance + (other.glance - glance) * t)
+        }
+    }
+
     /// Menu bar template glyph in the context's current color, drawn as one layer so dimming doesn't show
     /// seams. Grid: 18 x 18 units. `openness` 0 is asleep (closed lids, dimmed), 1 is awake (open eyes looking
-    /// up); in between the lids lift into the eyes, the pupils grow in and the ink goes from 55% to full.
-    static func drawGlyph(in ctx: CGContext, rect: CGRect, openness: CGFloat) {
+    /// up); in between the lids lift into the eyes, the pupils grow in and the ink goes from 55% to full. With the eyes
+    /// open, `detail` comes in by `amount` (0...1): the eyes move to make room and the detail fades and slides in.
+    static func drawGlyph(in ctx: CGContext, rect: CGRect, openness: CGFloat, detail: Detail = .none, amount: CGFloat = 0) {
         let open = min(max(openness, 0), 1)
         let u = rect.width / 18
         func P(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: rect.minX + x * u, y: rect.minY + y * u) }
@@ -203,6 +236,12 @@ enum AwakeMark {
             ctx.setBlendMode(.normal)
             ctx.fillEllipse(in: circle(CGPoint(x: pc.x - 0.62 * s * u, y: pc.y + 0.62 * s * u), 0.66 * s * u))
         }
+        let a = min(max(amount, 0), 1)
+        if open == 1, detail != .none, a > 0 {
+            drawOpenEyes(in: ctx, P: P, u: u, layout: EyeLayout.plain.mixed(with: .for(detail), a), detail: detail, amount: a,
+                         pupil: pupil)
+            return
+        }
         for x in [rightX - ew - gap, rightX] {
             let c = P(x, cy)
             ctx.setBlendMode(.normal)
@@ -223,5 +262,46 @@ enum AwakeMark {
             let top = lidTop + (c.y + eh / 2 * u - lidTop) * open
             pupil(CGPoint(x: c.x, y: top - (0.9 + pr) * grow * u), scale: grow)
         }
+    }
+
+    /// The open eyes at `layout` with `detail` partway in (`amount` 0...1).
+    private static func drawOpenEyes(in ctx: CGContext, P: (CGFloat, CGFloat) -> CGPoint, u: CGFloat, layout l: EyeLayout,
+                                     detail: Detail, amount a: CGFloat, pupil: (CGPoint, CGFloat) -> Void) {
+        let s = l.scale, ew = 6.7 * s, eh = 8.6 * s, gap = 2.0 * s, pr = 2.05 * s
+        // On the Move ends with one small hop, near the end of its slide.
+        let hop: CGFloat = detail == .speedLines && a > 0.55 ? 1.1 * sin(.pi * (a - 0.55) / 0.45) : 0
+        for x in [l.x - (ew + gap) / 2, l.x + (ew + gap) / 2] {
+            let c = P(x, l.y + hop)
+            ctx.addPath(eyePath(center: c, width: ew * u, height: eh * u, n: face.eyeN, flare: face.eyeFlare))
+            ctx.fillPath()
+            pupil(CGPoint(x: c.x + l.glance * u, y: c.y + (eh / 2 - 0.9 * s - pr) * u), s)
+        }
+
+        ctx.saveGState()
+        ctx.setAlpha(a)
+        ctx.beginTransparencyLayer(auxiliaryInfo: nil)
+        switch detail {
+        case .none:
+            break
+        case .moon:
+            // A full crescent (about 6.6 units across, 2.6 at its thickest) so it reads at 18 pt; it rises into place.
+            let m = P(14.3, 13.9 - 1.5 * (1 - a))
+            ctx.fillEllipse(in: circle(m, 3.3 * u))
+            ctx.setBlendMode(.clear)
+            ctx.fillEllipse(in: circle(CGPoint(x: m.x - 1.6 * u, y: m.y + 1.4 * u), 2.55 * u))
+            ctx.setBlendMode(.normal)
+        case .speedLines:
+            // Three lines of different lengths, sliding in from the left behind the eyes.
+            let dx = -2.5 * (1 - a)
+            for (x0, x1, y) in [(1.0, 3.7, 10.9), (0.5, 4.1, 8.3), (1.3, 3.5, 5.7)] as [(CGFloat, CGFloat, CGFloat)] {
+                ctx.move(to: P(x0 + dx, y))
+                ctx.addLine(to: P(x1 + dx, y))
+            }
+            ctx.setLineWidth(1.15 * u)
+            ctx.setLineCap(.round)
+            ctx.strokePath()
+        }
+        ctx.endTransparencyLayer()
+        ctx.restoreGState()
     }
 }
