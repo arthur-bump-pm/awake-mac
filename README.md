@@ -25,16 +25,25 @@
 
 ## Install
 
-1. Download **Awake-1.0.0.zip** from [Releases](https://github.com/arthur-bump-pm/awake-mac/releases/latest), unzip it, and drag **Awake** to Applications.
-2. Open it. Awake isn't notarized by Apple, so the first time macOS refuses to open it. Go to System Settings → Privacy & Security, scroll down and click **Open Anyway**. Or run this once in Terminal:
+Paste this in Terminal:
 
-   ```bash
-   xattr -dr com.apple.quarantine /Applications/Awake.app
-   ```
+```bash
+curl -fsSL https://raw.githubusercontent.com/arthur-bump-pm/awake-mac/main/install.sh | bash
+```
 
-3. A short welcome walks you through the rest: the modes, two optional permissions, your hotspot and trusted Wi-Fi, and Claude Code.
+It downloads the latest release, checks it against the release's checksum and signature, puts Awake in Applications and opens it. Run it again to update. ([Read the script](install.sh) first if you like; it's short.)
 
-Awake needs macOS 14 Sonoma or later and runs on Apple silicon and Intel Macs. If you use a menu bar manager (Bartender, Ice, Hidden Bar), drag Awake's eyes to the visible side.
+Or with [Homebrew](https://brew.sh):
+
+```bash
+brew install --cask arthur-bump-pm/tap/awake
+```
+
+Homebrew also puts `awakectl` on your PATH and updates Awake with `brew upgrade`.
+
+Or download **Awake-x.y.z.zip** from [Releases](https://github.com/arthur-bump-pm/awake-mac/releases/latest), unzip it and drag Awake to Applications. Awake isn't notarized by Apple, so the first time you open a downloaded copy, macOS refuses: go to System Settings → Privacy & Security and click **Open Anyway**. The two commands above skip that step.
+
+A short welcome then walks you through the rest: the modes, two optional permissions, your hotspot and trusted Wi-Fi, and Claude Code. Awake needs macOS 14 Sonoma or later and runs on Apple silicon and Intel Macs. If you use a menu bar manager (Bartender, Ice, Hidden Bar), drag Awake's eyes to the visible side.
 
 <img src="docs/images/welcome.png" width="560" alt="The welcome window's first step, listing the four modes with their menu bar icons">
 
@@ -58,7 +67,7 @@ New Claude Code sessions then understand "hey, I got to move", "I'm back at my d
 
 ## Command line
 
-`awakectl` is inside the app. To type it as plain `awakectl`, link it into a folder on your PATH:
+`awakectl` is inside the app (Homebrew links it for you). To type it as plain `awakectl` otherwise, link it into a folder on your PATH:
 
 ```bash
 mkdir -p ~/.local/bin && ln -s /Applications/Awake.app/Contents/MacOS/awakectl ~/.local/bin/awakectl
@@ -93,7 +102,7 @@ The sudoers rule works for anything running as your user, not only Awake. The wo
 
 ## Uninstall
 
-Quit Awake first: quitting puts back everything it changed. Then:
+Installed with Homebrew: `brew uninstall --cask --zap awake`, then `sudo rm /etc/sudoers.d/awake` if you set up the admin permission. Otherwise, quit Awake first (quitting puts back everything it changed), then:
 
 ```bash
 claude mcp remove awake -s user      # if you connected Claude Code

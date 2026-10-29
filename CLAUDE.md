@@ -54,4 +54,4 @@ build/Awake.app/Contents/MacOS/Awake --render-preview <dir>   # panel.png, panel
 - No personal data in the repo: no Wi-Fi names, user names or machine details in code, tests or docs.
 - Update the README Versions table whenever a version's status changes.
 - README screenshots in `docs/images` come from `--render-preview` (made-up samples only): menu.png = panel-calm, modes.png = glyphs, welcome.png = welcome-1.
-- Releases: bump `CFBundleShortVersionString` in `Sources/Awake/Info.plist`, run `Scripts/package_release.sh`, tag `v<version>`, and attach the zip and .sha256 to a GitHub release.
+- Releases: bump `CFBundleShortVersionString` in `Sources/Awake/Info.plist`, run `Scripts/package_release.sh`, tag `v<version>`, attach the zip and .sha256 to a GitHub release, then run `Scripts/update_tap.sh` (points the Homebrew cask in github.com/arthur-bump-pm/homebrew-tap at the new version). `install.sh` (the one-line install in the README) always takes the latest release, so it needs nothing.
