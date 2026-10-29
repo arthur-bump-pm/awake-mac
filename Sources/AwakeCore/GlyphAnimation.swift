@@ -4,9 +4,9 @@ import Foundation
 public enum GlyphAccent: Int, CaseIterable, Sendable {
     /// Keep awake (and lid-closed mode set elsewhere): the plain open eyes.
     case none
-    /// Overnight: a crescent moon over Mochi's head.
+    /// Overnight: a crescent moon over Awakie's head.
     case moon
-    /// On the Move: Mochi slides right, eyes glancing ahead, with speed lines behind.
+    /// On the Move: Awakie slides right, eyes glancing ahead, with speed lines behind.
     case speedLines
 }
 

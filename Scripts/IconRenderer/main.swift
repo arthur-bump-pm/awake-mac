@@ -1,4 +1,4 @@
-// Renders Awake's app icon ("Mochi", awake state, 1024px PNG) and a menu bar glyph preview.
+// Renders Awake's app icon ("Awakie", awake state, 1024px PNG) and a menu bar glyph preview.
 // Built together with Sources/Awake/AwakeMark.swift by Scripts/make_icon.sh.
 // Style: Dimension (Refero) — glossy void-black tile, soft white eyes, faint dusk-violet rim.
 import AppKit

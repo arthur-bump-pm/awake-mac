@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 
-/// Awake's mark ("Mochi"): two soft marshmallow eyes with glossy pupils glancing up. The app icon draws
+/// Awake's mark ("Awakie"): two soft marshmallow eyes with glossy pupils glancing up. The app icon draws
 /// them as a glossy character (Scripts/IconRenderer) and the menu bar draws the same eyes as a template glyph
 /// at any openness, so the status item can animate them opening and closing.
 enum AwakeMark {
