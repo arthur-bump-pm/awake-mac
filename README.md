@@ -1,5 +1,18 @@
 # Awake
 
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <a href="docs/media/awake-office.mp4"><img src="docs/media/awake-office.gif" width="300" alt="An office at 9 PM: everyone waits at their desk while their Claude session runs. One person turns on On the Move in Awake, closes the lid and walks out while Claude keeps working."></a><br>
+      <sub>Can't leave until Claude finishes? · <a href="docs/media/awake-office.mp4">▶ with sound</a></sub>
+    </td>
+    <td align="center" width="50%">
+      <a href="docs/media/awake-street.mp4"><img src="docs/media/awake-street.gif" width="300" alt="A street full of people carrying half-open laptops so their agents keep running. One person turns on On the Move in Awake, closes the lid and walks on while two sessions keep working."></a><br>
+      <sub>No more half-open laptop walk · <a href="docs/media/awake-street.mp4">▶ with sound</a></sub>
+    </td>
+  </tr>
+</table>
+
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B-lightgrey) ![Apple silicon and Intel](https://img.shields.io/badge/Apple%20silicon%20%7C%20Intel-lightgrey) ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
 
 **Keep your Mac running and online while you work away from your desk.** Awake lives in your menu bar as a pair of eyes. Pick a mode, close the lid, and your work, or your coding agents (Claude Code, Codex and others), keep going.
