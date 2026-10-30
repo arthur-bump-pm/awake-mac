@@ -3,12 +3,12 @@
 <table>
   <tr>
     <td align="center" width="50%">
-      <a href="docs/media/awake-office.mp4"><img src="docs/media/awake-office.gif" width="300" alt="An office at 9 PM: everyone waits at their desk while their Claude session runs. One person turns on On the Move in Awake, closes the lid and walks out while Claude keeps working."></a><br>
-      <sub>Can't leave until Claude finishes? · <a href="docs/media/awake-office.mp4">▶ with sound</a></sub>
+      <a href="https://github.com/user-attachments/assets/3914583e-b4d2-485c-b50e-6f05e22834e0"><img src="docs/media/awake-office.gif" width="300" alt="An office at 9 PM: everyone waits at their desk while their Claude session runs. One person turns on On the Move in Awake, closes the lid and walks out while Claude keeps working."></a><br>
+      <sub>Can't leave until Claude finishes? · <a href="https://github.com/user-attachments/assets/3914583e-b4d2-485c-b50e-6f05e22834e0">▶ with sound</a></sub>
     </td>
     <td align="center" width="50%">
-      <a href="docs/media/awake-street.mp4"><img src="docs/media/awake-street.gif" width="300" alt="A street full of people carrying half-open laptops so their agents keep running. One person turns on On the Move in Awake, closes the lid and walks on while two sessions keep working."></a><br>
-      <sub>No more half-open laptop walk · <a href="docs/media/awake-street.mp4">▶ with sound</a></sub>
+      <a href="https://github.com/user-attachments/assets/ea3f0785-f45f-4790-8556-3cadddbd4b48"><img src="docs/media/awake-street.gif" width="300" alt="A street full of people carrying half-open laptops so their agents keep running. One person turns on On the Move in Awake, closes the lid and walks on while two sessions keep working."></a><br>
+      <sub>No more half-open laptop walk · <a href="https://github.com/user-attachments/assets/ea3f0785-f45f-4790-8556-3cadddbd4b48">▶ with sound</a></sub>
     </td>
   </tr>
 </table>
