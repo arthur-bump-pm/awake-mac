@@ -9,11 +9,11 @@ let usage = """
 
       status                    show what Awake is doing
       move on|off               On the Move mode (lid-closed + keep awake + auto-hotspot)
-      awake on|off|claude|<minutes>
-                                keep the Mac awake (lid open); "claude" = while Claude works
-      overnight on|off|claude|always
+      awake on|off|agents|<minutes>
+                                keep the Mac awake (lid open); "agents" (or "claude") = while coding agents work
+      overnight on|off|agents|always
                                 keep running with the lid closed: until the morning hour in
-                                Settings, until Claude finishes, or until turned off
+                                Settings, until coding agents finish, or until turned off
       lid on|off                lid-closed mode (on = overnight always)
       hotspot on|off|join       auto-hotspot, or join the hotspot now
       mcp                       run as an MCP server for Claude Code (stdio)
@@ -73,13 +73,13 @@ case ("status", nil):
     request = ControlRequest(.status)
 case ("move", let word?) where onOff(word) != nil:
     request = ControlRequest(.move, on: onOff(word))
-case ("awake", "claude"):
+case ("awake", "claude"), ("awake", "agents"):
     request = ControlRequest(.keepAwake, on: true, whileClaudeWorks: true)
 case ("awake", let word?) where onOff(word) != nil:
     request = ControlRequest(.keepAwake, on: onOff(word))
 case ("awake", let word?) where Int(word).map { (1...10_080).contains($0) } == true:
     request = ControlRequest(.keepAwake, on: true, minutes: Int(word))
-case ("overnight", "claude"):
+case ("overnight", "claude"), ("overnight", "agents"):
     request = ControlRequest(.overnight, on: true, end: .whenClaudeFinishes)
 case ("overnight", "always"):
     request = ControlRequest(.overnight, on: true, end: .manually)

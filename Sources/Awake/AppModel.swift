@@ -20,7 +20,7 @@ enum KeepAwakeOption: Hashable, Identifiable {
         case .off: "Off"
         case .indefinitely: "Always"
         case .minutes(let m): AppModel.format(TimeInterval(m) * 60)
-        case .whileClaudeWorks: "While Claude works"
+        case .whileClaudeWorks: "While agents work"
         }
     }
 
@@ -66,11 +66,11 @@ enum AwakeMode: CaseIterable, Identifiable {
 }
 
 extension OvernightEnd {
-    /// Mid-sentence form, e.g. "until Claude finishes"; the morning hour is the session's own time.
+    /// Mid-sentence form, e.g. "until agents finish"; the morning hour is the session's own time.
     var phrase: String {
         switch self {
         case .morning: "in the morning"
-        case .whenClaudeFinishes: "when Claude finishes"
+        case .whenClaudeFinishes: "when agents finish"
         case .manually: "when you turn it off"
         }
     }
@@ -86,16 +86,16 @@ enum MoveEnd: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .whenClaudeFinishes: "When Claude finishes"
+        case .whenClaudeFinishes: "When agents finish"
         case .afterFourHours: "After 4 hours"
         case .manually: "When I turn it off"
         }
     }
 
-    /// Mid-sentence form, e.g. "ends when Claude finishes".
+    /// Mid-sentence form, e.g. "ends when agents finish".
     var phrase: String {
         switch self {
-        case .whenClaudeFinishes: "when Claude finishes"
+        case .whenClaudeFinishes: "when agents finish"
         case .afterFourHours: "after 4 hours"
         case .manually: "when you turn it off"
         }
@@ -137,7 +137,7 @@ struct PanelAlert: Identifiable, Equatable {
 final class AppModel: ObservableObject {
     static let shared = AppModel()
 
-    /// How long every Claude session must stay idle before "Claude finished" counts.
+    /// How long every coding session must stay idle before "Agents finished" counts.
     static let claudeIdleGrace: TimeInterval = 5 * 60
     static let moveTimeLimit: TimeInterval = 4 * 3600
     let keepAwake: KeepAwakeController
@@ -175,7 +175,10 @@ final class AppModel: ObservableObject {
     /// The user's shortcuts, for Settings to pick from; read when Settings opens.
     @Published private(set) var installedShortcuts: [String] = []
     @Published private(set) var otherAwakeApps: [String] = []
-    @Published private(set) var claudeWorking = 0
+    /// Coding sessions working right now, of every agent (Claude Code, Codex, …); see `AgentSessions`.
+    @Published private(set) var agentsWorking = 0
+    /// Open and working sessions per agent.
+    @Published private(set) var agentSessions: [AgentSessionCount] = []
     @Published private(set) var keepAwakeWhileClaudeWorks = false
     @Published private(set) var atDesk = false
     @Published private(set) var deskNudge: DeskEvent?
@@ -354,6 +357,7 @@ final class AppModel: ObservableObject {
     private let shortcuts = ShortcutRunner()
     private let tailscaleCLI = TailscaleCLI()
     private let sharingCheck = SharingCheck()
+    private let agentScanner = AgentScanner()
     private var powerAlerts = PowerAlerts()
     private var healthWatch = HealthWatch(cores: ProcessInfo.processInfo.activeProcessorCount)
     private var trustedReturn = TrustedReturn()
@@ -595,7 +599,7 @@ final class AppModel: ObservableObject {
         if let overnight { return "Overnight: running with the lid closed too, \(overnightPhrase(overnight))" }
         if lidMode.isEnabled { return "Keeping your Mac awake, lid closed too" }
         if keepAwake.isActive {
-            return keepAwakeWhileClaudeWorks ? "Keeping your Mac awake while Claude works" : "Keeping your Mac awake"
+            return keepAwakeWhileClaudeWorks ? "Keeping your Mac awake while agents work" : "Keeping your Mac awake"
         }
         return "Off"
     }
@@ -629,20 +633,20 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// "until 9:00 AM", "until Claude finishes" or "until you turn it off".
+    /// "until 9:00 AM", "until agents finish" or "until you turn it off".
     func overnightPhrase(_ session: OvernightSession) -> String {
         switch session.end {
         case .morning: session.until.map { "until \($0.formatted(date: .omitted, time: .shortened))" } ?? "until morning"
-        case .whenClaudeFinishes: "until Claude finishes"
+        case .whenClaudeFinishes: "until agents finish"
         case .manually: "until you turn it off"
         }
     }
 
-    /// For the status: "at 9:00 AM", "when Claude finishes" or "when turned off".
+    /// For the status: "at 9:00 AM", "when agents finish" or "when turned off".
     private func overnightEndsText(_ session: OvernightSession) -> String {
         switch session.end {
         case .morning: session.until.map { "at \($0.formatted(date: .omitted, time: .shortened))" } ?? "in the morning"
-        case .whenClaudeFinishes: "when Claude finishes"
+        case .whenClaudeFinishes: "when agents finish"
         case .manually: "when turned off"
         }
     }
@@ -656,7 +660,7 @@ final class AppModel: ObservableObject {
             return "\(otherAwakeApps.joined(separator: ", ")) \(otherAwakeApps.count == 1 ? "keeps" : "keep") it awake anyway"
         case .keepAwake:
             guard on else { return "Lid open" }
-            if keepAwakeWhileClaudeWorks { return "Lid open · while Claude works" }
+            if keepAwakeWhileClaudeWorks { return "Lid open · while agents work" }
             return "Lid open · " + (keepAwake.remainingTime.map { "\(Self.format($0)) left" } ?? "until you turn it off")
         case .overnight:
             if on, let overnight { return "Lid closed is fine · \(overnightPhrase(overnight))" }
@@ -666,7 +670,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// The panel's second header line: the network's profile and Claude's sessions, or nil.
+    /// The panel's second header line: the network's profile and the coding sessions working, or nil.
     var panelDetail: String? {
         var parts: [String] = []
         switch profile {
@@ -674,9 +678,7 @@ final class AppModel: ObservableObject {
         case .home: if isShielded { parts.append("Firewall shield on") }
         case .unknown: if isShielded { parts.append("Firewall shield on") }
         }
-        if claudeWorking > 0 {
-            parts.append(claudeWorking == 1 ? "1 Claude session working" : "\(claudeWorking) Claude sessions working")
-        }
+        if let sessions = AgentSessionCount.panelText(agentSessions) { parts.append(sessions) }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
@@ -773,7 +775,7 @@ final class AppModel: ObservableObject {
         alerts += healthWarnings.map(healthAlert)
         switch deskNudge {
         case .left? where !onTheMove:
-            alerts.append(PanelAlert(kind: .leftDesk, message: "Leaving your desk? Keep Claude running with the lid closed.", action: "On the Move"))
+            alerts.append(PanelAlert(kind: .leftDesk, message: "Leaving your desk? Keep your agents running with the lid closed.", action: "On the Move"))
         case .arrived? where onTheMove:
             alerts.append(PanelAlert(kind: .backAtDesk, message: "Back at your desk? Turn off On the Move.", action: "I'm Back"))
         default:
@@ -834,7 +836,7 @@ final class AppModel: ObservableObject {
                               action: "Open Storage")
         case .lowMemory(let critical):
             return PanelAlert(kind: .health(.memory),
-                              message: critical ? "Memory is very low: macOS may quit apps." : "Memory is low, so apps and Claude slow down.",
+                              message: critical ? "Memory is very low: macOS may quit apps." : "Memory is low, so apps and agents slow down.",
                               action: "Activity Monitor")
         case .busyCPU:
             let who = busyProcess.map { ", mostly \($0)" } ?? ""
@@ -864,16 +866,14 @@ final class AppModel: ObservableObject {
         } else if lidMode.isEnabled {
             sentences.append("The Mac keeps running with the lid closed.")
         } else if keepAwakeWhileClaudeWorks {
-            sentences.append("The Mac stays awake while Claude works (lid open).")
+            sentences.append("The Mac stays awake while coding agents work (lid open).")
         } else if keepAwake.isActive {
             sentences.append(keepAwake.remainingTime.map { "The Mac stays awake for \(Self.format($0)) (lid open)." }
                              ?? "The Mac stays awake while the lid is open.")
         } else {
             sentences.append("Awake is off.")
         }
-        if claudeWorking > 0 {
-            sentences.append(claudeWorking == 1 ? "1 Claude session is working." : "\(claudeWorking) Claude sessions are working.")
-        }
+        if let sessions = AgentSessionCount.statusSentence(agentSessions) { sentences.append(sessions) }
         if autoHotspot {
             // Location is one sentence below, for every feature that needs it.
             sentences.append(hotspotSSID.isEmpty ? "Auto-hotspot is on, but no hotspot is chosen yet: pick one in Awake Settings."
@@ -912,7 +912,7 @@ final class AppModel: ObservableObject {
             autoHotspot: autoHotspot, hotspot: hotspotSSID.isEmpty ? nil : hotspotSSID,
             hotspotReady: hotspotIsConfigured, online: online, wifi: wifi.ssid, onHotspot: isOnHotspot,
             batteryPercent: power.percent, onBattery: power.onBattery, keepAwakeWhileClaudeWorks: keepAwakeWhileClaudeWorks,
-            claudeWorking: claudeWorking, otherAwakeApps: otherAwakeApps, captivePortal: portalURL != nil,
+            claudeWorking: agentsWorking, sessions: agentSessions.map(AgentSessionStatus.init), otherAwakeApps: otherAwakeApps, captivePortal: portalURL != nil,
             atDesk: atDesk, networkProfile: profile, firewallShield: isShielded,
             batteryMinutesLeft: power.minutesLeft, chargerWatts: power.adapterWatts,
             chargerTooWeak: hasBattery && power.externalConnected ? power.chargerTooWeak : nil,
@@ -1102,7 +1102,7 @@ final class AppModel: ObservableObject {
             keepAwakeOption = .off
         }
         refreshAwakeWatch()
-        claudeWasWorking = claudeWorking > 0
+        claudeWasWorking = agentsWorking > 0
         claudeIdleSince = nil
         overnight = OvernightSession.start(end: end, morningHour: overnightHour, now: .now)
         return nil
@@ -1206,7 +1206,7 @@ final class AppModel: ObservableObject {
             onTheMove = true
             defaults.set(Date.now, forKey: Keys.moveStartedAt)
             refreshAwakeWatch()
-            claudeWasWorking = claudeWorking > 0
+            claudeWasWorking = agentsWorking > 0
             claudeIdleSince = nil
             deskNudge = nil
         }
@@ -1515,7 +1515,7 @@ final class AppModel: ObservableObject {
                 Notifier.post(title: "Disk almost full", body: "\(Self.bytes(free)) free. Builds and downloads can fail.")
             case .lowMemory(let critical):
                 Notifier.post(title: critical ? "Memory is very low" : "Memory is low",
-                              body: "Quit apps you don't need, or Claude's work slows down.")
+                              body: "Quit apps you don't need, or your agents slow down.")
             case .busyCPU:
                 // Named once, when the warning starts: `ps` isn't worth running every few seconds.
                 Task {
@@ -1600,7 +1600,7 @@ final class AppModel: ObservableObject {
             if newValue == .whileClaudeWorks {
                 // Fresh, not up to 30 s old: the session asking for this is likely working right now.
                 refreshAwakeWatch()
-                claudeWasWorking = claudeWorking > 0
+                claudeWasWorking = agentsWorking > 0
                 claudeIdleSince = nil
             }
             switch newValue {
@@ -1997,7 +1997,7 @@ final class AppModel: ObservableObject {
         switch desk.update(state, now: .now) {
         case .left? where deskSuggestions && !onTheMove && !PowerSource.isLidClosed():
             deskNudge = .left
-            Notifier.post(title: "Leaving your desk?", body: "Turn on On the Move to keep Claude running with the lid closed.",
+            Notifier.post(title: "Leaving your desk?", body: "Turn on On the Move to keep your agents running with the lid closed.",
                           category: .leftDesk)
         case .arrived? where deskSuggestions && onTheMove:
             deskNudge = .arrived
@@ -2013,13 +2013,16 @@ final class AppModel: ObservableObject {
     private func refreshAwakeWatch() {
         guard !isPreview else { return }
         let holders = AwakeWatch.holders()
-        let isClaude: (AwakeHolder) -> Bool = { holder in
-            holder.processName == "caffeinate"
-                && AwakeWatch.processParent(holder.pid).flatMap(AwakeWatch.processName) == "claude"
+        let scan = agentScanner.scan()
+        // An agent's own `caffeinate` is its session working, not another app keeping the Mac awake.
+        let isAgents: (AwakeHolder) -> Bool = { holder in
+            holder.processName == "caffeinate" && AwakeWatch.processParent(holder.pid).map(scan.agentPIDs.contains) == true
         }
-        let working = holders.filter(isClaude).count
-        let others = AwakeWatch.appNames(for: holders.filter { !isClaude($0) })
-        if claudeWorking != working { claudeWorking = working }
+        let counts = AgentSessionCount.tally(scan.sessions)
+        let working = counts.reduce(0) { $0 + $1.working }
+        let others = AwakeWatch.appNames(for: holders.filter { !isAgents($0) })
+        if agentSessions != counts { agentSessions = counts }
+        if agentsWorking != working { agentsWorking = working }
         if otherAwakeApps != others { otherAwakeApps = others }
     }
 
@@ -2043,7 +2046,7 @@ final class AppModel: ObservableObject {
                         return true
                     }
                     guard ended else { return }
-                    Notifier.post(title: timeUp ? "On the Move ended after 4 hours" : "Claude finished",
+                    Notifier.post(title: timeUp ? "On the Move ended after 4 hours" : "Agents finished",
                                   body: "On the Move is off, so your Mac can sleep.")
                     sleepIfLidClosed()
                 }
@@ -2056,19 +2059,19 @@ final class AppModel: ObservableObject {
                     return (true, await self.endOvernight())
                 }
                 guard ended else { return }
-                Notifier.post(title: session.end == .morning ? "Good morning" : "Claude finished",
+                Notifier.post(title: session.end == .morning ? "Good morning" : "Agents finished",
                               body: problem ?? "Overnight is off, so your Mac can sleep.")
                 sleepIfLidClosed()
             }
         } else if keepAwakeWhileClaudeWorks, claudeFinished {
             keepAwakeOption = .off
-            Notifier.post(title: "Claude finished", body: "Awake stopped keeping your Mac awake.")
+            Notifier.post(title: "Agents finished", body: "Awake stopped keeping your Mac awake.")
         }
     }
 
-    /// Tracks whether every Claude session has been idle long enough. Only counts once Claude has worked.
+    /// Tracks whether every coding session has been idle long enough. Only counts once one has worked.
     private func updateClaudeIdle() -> Bool {
-        if claudeWorking > 0 {
+        if agentsWorking > 0 {
             claudeWasWorking = true
             claudeIdleSince = nil
             return false
@@ -2157,7 +2160,8 @@ final class AppModel: ObservableObject {
         sharingOn = sample.sharingOn
         tailscale = sample.tailscale
         reachChecked = true
-        claudeWorking = sample.claudeSessions
+        agentSessions = sample.sessions
+        agentsWorking = sample.sessions.reduce(0) { $0 + $1.working }
         otherAwakeApps = sample.otherAwakeApps
         nearbyNetworks = sample.nearbyNetworks
         installedShortcuts = sample.installedShortcuts

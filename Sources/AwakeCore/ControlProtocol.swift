@@ -64,8 +64,10 @@ public struct AwakeStatus: Codable, Sendable, Equatable {
     public var batteryPercent: Int?
     public var onBattery: Bool
     public var keepAwakeWhileClaudeWorks: Bool
-    /// Claude Code sessions working right now (each holds its own short keep-awake).
+    /// Coding sessions working right now, of every agent (Claude Code, Codex, …). The name predates other agents.
     public var claudeWorking: Int
+    /// Open and working coding sessions per agent, e.g. [{agent: "claude", open: 3, working: 1}].
+    public var sessions: [AgentSessionStatus]?
     /// Other apps keeping the Mac awake, e.g. ["Google Chrome", "Insomnia"].
     public var otherAwakeApps: [String]
     public var captivePortal: Bool
@@ -103,7 +105,8 @@ public struct AwakeStatus: Codable, Sendable, Equatable {
     public init(onTheMove: Bool, keepAwake: Bool, keepAwakeMinutesLeft: Int?, lidClosedMode: Bool,
                 lidClosedModeSetUp: Bool, autoHotspot: Bool, hotspot: String?, hotspotReady: Bool,
                 online: Bool?, wifi: String?, onHotspot: Bool, batteryPercent: Int?, onBattery: Bool,
-                keepAwakeWhileClaudeWorks: Bool = false, claudeWorking: Int = 0, otherAwakeApps: [String] = [],
+                keepAwakeWhileClaudeWorks: Bool = false, claudeWorking: Int = 0, sessions: [AgentSessionStatus]? = nil,
+                otherAwakeApps: [String] = [],
                 captivePortal: Bool = false, atDesk: Bool = false, networkProfile: NetworkProfile? = nil,
                 firewallShield: Bool? = nil, batteryMinutesLeft: Int? = nil, chargerWatts: Int? = nil,
                 chargerTooWeak: Bool? = nil, reachable: Bool? = nil, reach: String? = nil, overnight: Bool? = nil,
@@ -124,6 +127,7 @@ public struct AwakeStatus: Codable, Sendable, Equatable {
         self.onBattery = onBattery
         self.keepAwakeWhileClaudeWorks = keepAwakeWhileClaudeWorks
         self.claudeWorking = claudeWorking
+        self.sessions = sessions
         self.otherAwakeApps = otherAwakeApps
         self.captivePortal = captivePortal
         self.atDesk = atDesk

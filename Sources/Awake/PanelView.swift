@@ -43,7 +43,7 @@ struct PanelView: View {
         .padding(Theme.panelPadding)
     }
 
-    /// Two lines: the network and battery, then the network's profile, Claude's sessions and battery time.
+    /// Two lines: the network and battery, then the network's profile, the coding sessions working and battery time.
     private var header: some View {
         HStack(spacing: 10) {
             Circle()

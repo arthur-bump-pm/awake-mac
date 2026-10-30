@@ -2,7 +2,7 @@
 
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B-lightgrey) ![Apple silicon and Intel](https://img.shields.io/badge/Apple%20silicon%20%7C%20Intel-lightgrey) ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
 
-**Keep your Mac running and online while you work away from your desk.** Awake lives in your menu bar as a pair of eyes. Pick a mode, close the lid, and your work, or Claude Code, keeps going.
+**Keep your Mac running and online while you work away from your desk.** Awake lives in your menu bar as a pair of eyes. Pick a mode, close the lid, and your work, or your coding agents (Claude Code, Codex and others), keep going.
 
 <img src="docs/images/menu.png" width="376" alt="Awake's menu: connection and battery at the top, then the four modes with Keep awake selected">
 
@@ -11,8 +11,8 @@
 <img src="docs/images/modes.png" width="410" alt="The menu bar icon in each mode, on light and dark menu bars: closed eyes for Off, open eyes for Keep awake, eyes and a moon for Overnight, eyes with speed lines for On the Move">
 
 - **Off**: your Mac sleeps as usual.
-- **Keep awake**: stays awake with the lid open, for 1 hour, 4 hours, always, or *while Claude works* (it lets the Mac sleep a few minutes after the last Claude Code session goes idle).
-- **Overnight**: keeps running with the lid open or closed, for long jobs. It ends at the morning hour you pick (9 AM by default), when Claude finishes, or when you turn it off. It changes nothing else.
+- **Keep awake**: stays awake with the lid open, for 1 hour, 4 hours, always, or *while agents work* (it lets the Mac sleep a few minutes after the last coding session goes idle).
+- **Overnight**: keeps running with the lid open or closed, for long jobs. It ends at the morning hour you pick (9 AM by default), when your agents finish, or when you turn it off. It changes nothing else.
 - **On the Move**: for when you pack up. The Mac keeps running with the lid closed, joins your iPhone hotspot if the internet drops, and turns on Low Power Mode and a firewall shield. When you're back, everything goes back to how it was.
 
 ## And a few things that keep work from stalling
@@ -20,6 +20,7 @@
 - **Warnings** when the disk is almost full, memory runs low, the CPU stays busy on battery, the battery is running out, or a charger is too weak to keep up.
 - **Café Wi-Fi**: tells a sign-in page apart from a dead connection, and switches to your hotspot only when the Wi-Fi is really down.
 - **Public Wi-Fi shield**: on any Wi-Fi you haven't trusted, turns on the macOS firewall with stealth mode and points out sharing that's on. When one of your trusted networks is in range again (home, the office), it offers to switch back.
+- **Coding sessions**: counts the Claude Code, Codex, Gemini CLI, Aider, OpenCode and other agent sessions you have open, and shows how many are working. A session's helpers (MCP servers, wrappers, agents it starts itself) don't count twice. Codex app servers count distinct open session files. Other agents can use CPU activity as a working signal; an active nested agent keeps at least one parent session marked working when its owning conversation cannot be identified.
 - **Safety stop**: if the Mac gets hot in a bag or the battery drops to 20%, Awake turns everything off and lets it sleep.
 - **Claude Code**: a built-in MCP server, so you can say "I got to move" or "going to bed, keep it running" and Claude switches the mode for you.
 
@@ -77,8 +78,8 @@ mkdir -p ~/.local/bin && ln -s /Applications/Awake.app/Contents/MacOS/awakectl ~
 
 ```bash
 awakectl status
-awakectl awake on|off|claude|<minutes>   # Keep awake ("claude" = while Claude works)
-awakectl overnight on|off|claude|always  # Overnight: until morning, until Claude finishes, or until turned off
+awakectl awake on|off|agents|<minutes>   # Keep awake ("agents" = while coding agents work)
+awakectl overnight on|off|agents|always  # Overnight: until morning, until your agents finish, or until turned off
 awakectl move on|off                     # On the Move
 awakectl hotspot on|off|join             # auto-hotspot, or join your hotspot now
 ```
@@ -120,6 +121,7 @@ Turn off Launch at login in System Settings → General → Login Items if it's 
 
 | Version | Status | Highlights |
 |---|---|---|
+| **1.1.0** | ✅ released 2026-10-30 | Counts Codex and other coding agents, not only Claude Code; separate app-server session counts and activity tracking for long jobs |
 | **1.0.1** | ✅ released 2026-10-29 | Install with one line in Terminal or with Homebrew; the license now ships inside the app |
 | **1.0.0** | ✅ released 2026-10-29 | Four modes (Keep awake, Overnight, On the Move); a menu bar icon that shows the mode; welcome on first launch; health and battery warnings; café Wi-Fi sign-in detection; auto-hotspot; public Wi-Fi shield and switching back to trusted Wi-Fi; safety stop; `awakectl` and an MCP server for Claude Code |
 

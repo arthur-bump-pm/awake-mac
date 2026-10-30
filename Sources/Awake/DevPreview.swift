@@ -91,7 +91,7 @@ struct PreviewSample {
     var adminPermission = true
     var locationAllowed = true
     var keepAwake = KeepAwakeOption.off
-    var claudeSessions = 2
+    var sessions = [AgentSessionCount(agent: .claude, open: 3, working: 2), AgentSessionCount(agent: .codex, open: 1, working: 1)]
     var otherAwakeApps = ["Music"]
     var sharingOn: [SharingService] = [.screenSharing, .remoteLogin]
     var tailscale: TailscaleStatus? = TailscaleStatus(online: true, dnsName: "example-mac.example-tailnet.ts.net",
@@ -118,7 +118,7 @@ struct PreviewSample {
         sample.lidClosedMode = false
         sample.overnight = nil
         sample.keepAwake = .whileClaudeWorks
-        sample.claudeSessions = 1
+        sample.sessions = [AgentSessionCount(agent: .claude, open: 2, working: 1), AgentSessionCount(agent: .codex, open: 1, working: 1)]
         sample.otherAwakeApps = []
         sample.sharingOn = []
         sample.lastFailure = nil
@@ -137,7 +137,7 @@ struct PreviewSample {
         sample.trustedNetworks = []
         sample.hotspot = ""
         sample.keepAwake = .off
-        sample.claudeSessions = 0
+        sample.sessions = []
         sample.publicShortcut = ""
         return sample
     }

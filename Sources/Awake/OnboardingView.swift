@@ -58,7 +58,7 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: 0) {
             ModeIntro(frame: GlyphPose.asleep.frame, title: "Off", detail: "Your Mac sleeps as usual.")
             ModeIntro(frame: GlyphPose(openness: 1, accent: .none, amount: 0).frame, title: "Keep awake",
-                      detail: "Stays awake with the lid open: for an hour, four, always, or while Claude works.")
+                      detail: "Stays awake with the lid open: for an hour, four, always, or while your coding agents work.")
             ModeIntro(frame: GlyphPose(openness: 1, accent: .moon, amount: 1).frame, title: "Overnight",
                       detail: "Keeps running with the lid closed until morning, for long jobs.")
             ModeIntro(frame: GlyphPose(openness: 1, accent: .speedLines, amount: 1).frame, title: "On the Move",

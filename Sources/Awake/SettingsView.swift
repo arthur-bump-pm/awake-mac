@@ -160,7 +160,7 @@ struct SettingsContent: View {
                         model.overnightEnd = .morning
                     }
                 }
-                Chip(title: "When Claude finishes", selected: model.overnightEnd == .whenClaudeFinishes) {
+                Chip(title: "When agents finish", selected: model.overnightEnd == .whenClaudeFinishes) {
                     model.overnightEnd = .whenClaudeFinishes
                 }
                 Chip(title: "When I turn it off", selected: model.overnightEnd == .manually) {

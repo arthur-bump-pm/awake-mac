@@ -165,9 +165,9 @@ public struct MCPHandler {
             Switch Awake's On the Move mode. Turn it ON whenever the user says they have to move, leave, \
             head out, pack up, commute, travel or go to a café while work keeps running, e.g. "hey, I got to \
             move", "I'm heading out", "gotta run", "packing up my laptop". It keeps the Mac running with the lid \
-            closed and switches to the iPhone hotspot if the internet drops, so this and other Claude sessions \
+            closed and switches to the iPhone hotspot if the internet drops, so this and other coding sessions (Claude Code, Codex, …) \
             keep working. Depending on the user's Awake Settings it also turns on the macOS firewall with stealth \
-            mode and, on battery, Low Power Mode. It ends by itself: by default a few minutes after every Claude \
+            mode and, on battery, Low Power Mode. It ends by itself: by default a few minutes after every coding \
             session has finished, or after 4 hours, or only when turned off (the status says which). Tell the user \
             briefly what changed and when it ends. Turn it OFF when they say they're settled or back at a desk \
             ("I'm back", "at my desk now"); that puts back their previous settings.
@@ -178,7 +178,7 @@ public struct MCPHandler {
             while long jobs finish. Turn it ON when the user leaves the Mac to work overnight or for hours, e.g. \
             "going to bed, keep it running", "leave it on tonight", "let this run while I'm out". It changes \
             nothing else (Wi-Fi, firewall and Low Power Mode stay as they are). By default it ends at the morning \
-            hour in the user's Awake Settings; `ends` can make it end when every Claude session has finished, or \
+            hour in the user's Awake Settings; `ends` can make it end when every coding session (Claude Code, Codex, …) has finished, or \
             only when turned off. The first time, macOS asks the user for their password. Tell the user briefly \
             when it ends.
             """,
@@ -189,7 +189,7 @@ public struct MCPHandler {
         tool("awake_status", "Awake Status",
              "Show Awake's current state: On the Move, Overnight, keep-awake, lid-closed mode, auto-hotspot, network (home or public, firewall shield), battery time left or charger, the Mac's health (free disk space, memory pressure, CPU use, and warnings), and whether the user's phone can reach this Mac (Tailscale + SSH). Check it before starting a long job."),
         tool("awake_keep_awake", "Keep Awake",
-             "Keep the Mac awake (lid open): indefinitely, for some minutes, or while Claude Code is working (it lets the Mac sleep a few minutes after every session goes idle). Or stop.",
+             "Keep the Mac awake (lid open): indefinitely, for some minutes, or while coding agents (Claude Code, Codex, …) are working (it lets the Mac sleep a few minutes after every session goes idle). Or stop.",
              ["mode": ["type": "string", "enum": ["indefinitely", "timed", "while_claude_works", "off"]],
               "minutes": ["type": "integer", "minimum": 1, "maximum": maxMinutes, "description": "Only for mode=timed."]],
              required: ["mode"]),

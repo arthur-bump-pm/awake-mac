@@ -67,7 +67,7 @@ final class AwakeWatchNameTests: XCTestCase {
 
     func testLiveLookupsDoNotCrash() {
         _ = AwakeWatch.holders()
-        _ = AwakeWatch.claudeSessionPIDs()
+        _ = AgentScanner().scan()
         XCTAssertNotNil(AwakeWatch.processName(getpid()))
         XCTAssertNotNil(AwakeWatch.processParent(getpid()))
         XCTAssertNil(AwakeWatch.processName(Int32.max))

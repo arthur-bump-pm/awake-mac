@@ -85,16 +85,6 @@ public enum AwakeWatch {
         return holder.processName
     }
 
-    public static func claudeSessionPIDs() -> [Int32] {
-        let byteCount = proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0)
-        guard byteCount > 0 else { return [] }
-        var pids = [pid_t](repeating: 0, count: Int(byteCount) / MemoryLayout<pid_t>.size + 32)
-        let written = proc_listpids(UInt32(PROC_ALL_PIDS), 0, &pids, Int32(pids.count * MemoryLayout<pid_t>.size))
-        guard written > 0 else { return [] }
-        return pids.prefix(Int(written) / MemoryLayout<pid_t>.size)
-            .filter { $0 > 0 && processName($0) == "claude" }
-    }
-
     public static func processParent(_ pid: Int32) -> Int32? {
         var info = proc_bsdinfo()
         let size = Int32(MemoryLayout<proc_bsdinfo>.size)
