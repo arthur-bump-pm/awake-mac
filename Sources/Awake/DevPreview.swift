@@ -45,8 +45,8 @@ enum DevPreview {
         exit(0)
     }
 
-    private static func panel(_ model: AppModel) -> some View {
-        PanelView(model: model, openSettings: {}).environment(\.frostedGlass, false)
+    @MainActor private static func panel(_ model: AppModel) -> some View {
+        PanelView(model: model, traffic: .preview(TrafficRate(down: 84_000_000, up: 2_100_000)), openSettings: {}).environment(\.frostedGlass, false)
             .padding(28).background(Color(hex: 0x33405e))
     }
 

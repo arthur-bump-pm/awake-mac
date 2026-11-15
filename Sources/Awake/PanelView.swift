@@ -1,10 +1,12 @@
 import AwakeCore
 import SwiftUI
 
-/// The menu bar panel: status, anything that needs attention, one mode at a time, and a footer. Everything else
+/// The menu bar panel: status, anything that needs attention, one mode at a time, and a footer (with the live network
+/// traffic between its buttons). Everything else
 /// lives in Settings.
 struct PanelView: View {
     @ObservedObject var model: AppModel
+    @ObservedObject var traffic: TrafficMeter
     var openSettings: () -> Void
     /// The room on screen below the menu bar; taller content scrolls inside it. Nil: no limit (previews).
     var maxHeight: CGFloat?
@@ -130,13 +132,27 @@ struct PanelView: View {
             Button("Settings", action: openSettings)
                 .buttonStyle(GhostButtonStyle())
                 .keyboardShortcut(",")
-            Spacer()
+            Spacer(minLength: 6)
+            trafficLine
+            Spacer(minLength: 6)
             Button("Quit Awake") { model.quit() }
                 .buttonStyle(GhostButtonStyle())
                 .keyboardShortcut("q")
         }
         .padding(.top, 10)
         .overlay(alignment: .top) { Rectangle().fill(Theme.hairline).frame(height: 1) }
+    }
+
+    /// Live download and upload across Wi-Fi, Ethernet and a tethered phone; dashes until the second reading.
+    private var trafficLine: some View {
+        Text(traffic.rate?.text ?? "↓ –  ↑ –")
+            .font(Theme.body(11))
+            .foregroundStyle(Theme.slate)
+            .monospacedDigit()
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .accessibilityLabel("Network traffic")
+            .accessibilityValue(traffic.rate?.spokenText ?? "Measuring")
     }
 
     /// Battery running low (under the warning threshold).

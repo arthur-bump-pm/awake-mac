@@ -10,6 +10,7 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
     private let panel = FloatingPanel()
     private let hosting: NSHostingController<PanelView>
     private let model: AppModel
+    private let traffic = TrafficMeter()
     private var outsideClickMonitor: Any?
     private var changes: AnyCancellable?
     // The menu bar glyph: the pose on screen, the animation in flight, the timer driving it, the frame shown.
@@ -22,9 +23,9 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
 
     init(model: AppModel, openSettings: @escaping () -> Void) {
         self.model = model
-        hosting = NSHostingController(rootView: PanelView(model: model, openSettings: openSettings))
+        hosting = NSHostingController(rootView: PanelView(model: model, traffic: traffic, openSettings: openSettings))
         super.init()
-        hosting.rootView = PanelView(model: model) { [weak self] in
+        hosting.rootView = PanelView(model: model, traffic: traffic) { [weak self] in
             self?.close()
             openSettings()
         }
@@ -63,6 +64,7 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
             return
         }
         model.panelWillOpen()
+        traffic.start()
         layout()
         panel.makeKeyAndOrderFront(nil)
         statusItem.button?.highlight(true)
@@ -75,6 +77,7 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
 
     func close() {
         panel.orderOut(nil)
+        traffic.stop()
         statusItem.button?.highlight(false)
         if let outsideClickMonitor {
             NSEvent.removeMonitor(outsideClickMonitor)

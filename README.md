@@ -17,7 +17,7 @@
 
 **Keep your Mac running and online while you work away from your desk.** Awake lives in your menu bar as a pair of eyes. Pick a mode, close the lid, and your work, or your coding agents (Claude Code, Codex and others), keep going.
 
-<img src="docs/images/menu.png" width="376" alt="Awake's menu: connection and battery at the top, then the four modes with Keep awake selected">
+<img src="docs/images/menu.png" width="376" alt="Awake's menu: connection and battery at the top, then the four modes with Keep awake selected, and download and upload speed at the bottom">
 
 ## Four modes
 
@@ -34,6 +34,7 @@
 - **Café Wi-Fi**: tells a sign-in page apart from a dead connection, and switches to your hotspot only when the Wi-Fi is really down.
 - **Public Wi-Fi shield**: on any Wi-Fi you haven't trusted, turns on the macOS firewall with stealth mode and points out sharing that's on. When one of your trusted networks is in range again (home, the office), it offers to switch back.
 - **Coding sessions**: counts the Claude Code, Codex, Gemini CLI, Aider, OpenCode and other agent sessions you have open, and shows how many are working. A session's helpers (MCP servers, wrappers, agents it starts itself) don't count twice. Codex app servers count distinct open session files. Other agents can use CPU activity as a working signal; an active nested agent keeps at least one parent session marked working when its owning conversation cannot be identified.
+- **Network traffic**: the menu shows how fast you're downloading and uploading right now, across Wi-Fi, Ethernet and a tethered phone. It reads the Mac's own counters while the menu is open, so it uses no data.
 - **Safety stop**: if the Mac gets hot in a bag or the battery drops to 20%, Awake turns everything off and lets it sleep.
 - **Claude Code**: a built-in MCP server, so you can say "I got to move" or "going to bed, keep it running" and Claude switches the mode for you.
 
