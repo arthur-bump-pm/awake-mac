@@ -1,8 +1,8 @@
 import AwakeCore
 import SwiftUI
 
-/// The menu bar panel: status, anything that needs attention, one mode at a time, and a footer (with the live network
-/// traffic between its buttons). Everything else
+/// The menu bar panel: status, anything that needs attention, one mode at a time, and a footer (the live network
+/// traffic, then Settings; Quit lives in Settings). Everything else
 /// lives in Settings.
 struct PanelView: View {
     @ObservedObject var model: AppModel
@@ -129,15 +129,12 @@ struct PanelView: View {
 
     private var footer: some View {
         HStack {
+            trafficLine
+                .padding(.leading, 6)
+            Spacer(minLength: 6)
             Button("Settings", action: openSettings)
                 .buttonStyle(GhostButtonStyle())
                 .keyboardShortcut(",")
-            Spacer(minLength: 6)
-            trafficLine
-            Spacer(minLength: 6)
-            Button("Quit Awake") { model.quit() }
-                .buttonStyle(GhostButtonStyle())
-                .keyboardShortcut("q")
         }
         .padding(.top, 10)
         .overlay(alignment: .top) { Rectangle().fill(Theme.hairline).frame(height: 1) }

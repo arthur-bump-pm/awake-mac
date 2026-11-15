@@ -100,6 +100,10 @@ struct SettingsContent: View {
                         .font(Theme.body(13))
                         .foregroundStyle(Theme.ash)
                 }
+                Spacer(minLength: 12)
+                // The menu bar panel has no Quit: it's here, on every tab (⌘Q works too).
+                Button("Quit Awake") { model.quit() }
+                    .buttonStyle(GhostButtonStyle())
             }
     }
 
