@@ -10,7 +10,8 @@ final class TrafficMeter: ObservableObject {
     /// The rate covers the last two seconds (three reads), which steadies it without lagging much.
     static let window = 3
     private let read: () -> TrafficCounters?
-    private var reads: [(time: Date, counters: TrafficCounters)] = []
+    /// Read times are system uptime, which never jumps when the clock is changed.
+    private var reads: [(time: TimeInterval, counters: TrafficCounters)] = []
     private var timer: Timer?
 
     init(read: @escaping () -> TrafficCounters? = TrafficReader.read) {
@@ -43,10 +44,10 @@ final class TrafficMeter: ObservableObject {
 
     private func sample() {
         guard let counters = read() else { return }
-        reads.append((Date(), counters))
+        reads.append((ProcessInfo.processInfo.systemUptime, counters))
         if reads.count > Self.window { reads.removeFirst(reads.count - Self.window) }
         if let first = reads.first, let last = reads.last, reads.count > 1 {
-            rate = TrafficRate.between(first.counters, at: first.time, last.counters, at: last.time)
+            rate = TrafficRate.between(first.counters, last.counters, seconds: last.time - first.time)
         }
     }
 }

@@ -135,6 +135,7 @@ Turn off Launch at login in System Settings → General → Login Items if it's 
 
 | Version | Status | Highlights |
 |---|---|---|
+| **1.2.1** | ✅ released 2026-11-15 | Steadier speed numbers; Internet Sharing no longer counted twice; ⌘Q quits from the menu again |
 | **1.2.0** | ✅ released 2026-11-15 | Live download and upload speed in the menu; Quit moves to Settings |
 | **1.1.0** | ✅ released 2026-10-30 | Counts Codex and other coding agents, not only Claude Code; separate app-server session counts and activity tracking for long jobs |
 | **1.0.1** | ✅ released 2026-10-29 | Install with one line in Terminal or with Homebrew; the license now ships inside the app |

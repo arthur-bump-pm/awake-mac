@@ -136,20 +136,28 @@ struct PanelView: View {
                 .buttonStyle(GhostButtonStyle())
                 .keyboardShortcut(",")
         }
+        // Quit lives in Settings; ⌘Q still quits from the panel.
+        .background {
+            Button("Quit Awake") { model.quit() }
+                .keyboardShortcut("q")
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .focusable(false)
+                .accessibilityHidden(true)
+        }
         .padding(.top, 10)
         .overlay(alignment: .top) { Rectangle().fill(Theme.hairline).frame(height: 1) }
     }
 
     /// Live download and upload across Wi-Fi, Ethernet and a tethered phone; dashes until the second reading.
     private var trafficLine: some View {
-        Text(traffic.rate?.text ?? "↓ –  ↑ –")
-            .font(Theme.body(11))
-            .foregroundStyle(Theme.slate)
-            .monospacedDigit()
-            .lineLimit(1)
-            .minimumScaleFactor(0.8)
-            .accessibilityLabel("Network traffic")
-            .accessibilityValue(traffic.rate?.spokenText ?? "Measuring")
+        HStack(spacing: 10) {
+            TrafficValue(arrow: "↓", value: traffic.rate.map { TrafficRate.text(bitsPerSecond: $0.down) })
+            TrafficValue(arrow: "↑", value: traffic.rate.map { TrafficRate.text(bitsPerSecond: $0.up) })
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Network traffic")
+        .accessibilityValue(traffic.rate?.spokenText ?? "Measuring")
     }
 
     /// Battery running low (under the warning threshold).
@@ -208,6 +216,28 @@ private struct ModeRow: View {
         .accessibilityLabel(title)
         .accessibilityValue(detail)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
+    }
+}
+
+/// One direction of the traffic line. DM Sans has no tabular figures (and 0 is its widest digit), so each number sits
+/// in a slot as wide as the widest value it can show ("000 Mbps"), right-aligned: the line doesn't shift as the digits
+/// change.
+private struct TrafficValue: View {
+    let arrow: String
+    let value: String?
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Text(arrow)
+            ZStack(alignment: .trailing) {
+                Text("000 Mbps").hidden()
+                Text(value ?? "–")
+            }
+        }
+        .font(Theme.body(11))
+        .foregroundStyle(Theme.slate)
+        .lineLimit(1)
+        .fixedSize()
     }
 }
 

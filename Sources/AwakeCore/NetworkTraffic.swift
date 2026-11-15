@@ -21,10 +21,22 @@ public struct TrafficCounters: Equatable, Sendable {
     }
 
     /// The interfaces the meter counts: the physical ones macOS names `en…` (Wi-Fi, Ethernet, a USB or Bluetooth
-    /// tethered phone). Tunnels (`utun`, e.g. Tailscale or a VPN) are left out, since their traffic also crosses an `en`
-    /// interface and would count twice; so are loopback, AirDrop (`awdl`, `llw`) and bridges.
-    public static func counts(interface name: String) -> Bool {
-        name.hasPrefix("en")
+    /// tethered phone) that have a routable address. Tunnels (`utun`, e.g. Tailscale or a VPN) are left out, since their
+    /// traffic also crosses an `en` interface and would count twice; so are loopback, AirDrop (`awdl`, `llw`) and
+    /// bridges. An `en` interface without an address of its own is a bridge member (Internet Sharing, Thunderbolt
+    /// Bridge): what it carries is forwarded and already counted on the uplink, so it's left out too.
+    public static func counts(interface name: String, addresses: [String]) -> Bool {
+        name.hasPrefix("en") && addresses.contains(where: isRoutable)
+    }
+
+    /// Not link-local: IPv4 169.254/16 and IPv6 fe80::/10 exist on every link and say nothing about a real network.
+    static func isRoutable(_ address: String) -> Bool {
+        let lower = address.lowercased()
+        if lower.contains(":") {
+            return !(lower.hasPrefix("fe8") || lower.hasPrefix("fe9") || lower.hasPrefix("fea") || lower.hasPrefix("feb"))
+                && lower != "::1"
+        }
+        return !lower.hasPrefix("169.254.") && !lower.hasPrefix("127.") && !lower.isEmpty
     }
 }
 
@@ -38,12 +50,11 @@ public struct TrafficRate: Equatable, Sendable {
         self.up = up
     }
 
-    /// The rate between two reads. Only interfaces present in both count, and one whose counters went backwards (it
-    /// went down and came back up) is skipped, so a new or reset interface never shows as a burst. Nil when no time
-    /// passed.
-    public static func between(_ earlier: TrafficCounters, at start: Date,
-                               _ later: TrafficCounters, at end: Date) -> TrafficRate? {
-        let seconds = end.timeIntervalSince(start)
+    /// The rate between two reads `seconds` apart. Only interfaces present in both count, and one whose counters went
+    /// backwards (it went down and came back up) is skipped, so a new or reset interface never shows as a burst. Nil
+    /// when no time passed.
+    public static func between(_ earlier: TrafficCounters, _ later: TrafficCounters,
+                               seconds: TimeInterval) -> TrafficRate? {
         guard seconds > 0 else { return nil }
         var received: UInt64 = 0
         var sent: UInt64 = 0
@@ -91,6 +102,7 @@ public enum TrafficReader {
         var buffer = [UInt8](repeating: 0, count: length)
         guard sysctl(&mib, u_int(mib.count), &buffer, &length, nil, 0) == 0 else { return nil }
 
+        let addresses = interfaceAddresses()
         var interfaces: [String: InterfaceCounts] = [:]
         buffer.withUnsafeBytes { raw in
             var offset = 0
@@ -105,7 +117,7 @@ public enum TrafficReader {
                     var name = [CChar](repeating: 0, count: Int(IF_NAMESIZE))
                     if if_indextoname(UInt32(message.ifm_index), &name) != nil {
                         let interface = String(cString: name)
-                        if TrafficCounters.counts(interface: interface) {
+                        if TrafficCounters.counts(interface: interface, addresses: addresses[interface] ?? []) {
                             interfaces[interface] = InterfaceCounts(received: message.ifm_data.ifi_ibytes,
                                                                     sent: message.ifm_data.ifi_obytes)
                         }
@@ -115,5 +127,23 @@ public enum TrafficReader {
             }
         }
         return TrafficCounters(interfaces)
+    }
+
+    /// Each interface's IPv4 and IPv6 addresses, as text (`getifaddrs`).
+    static func interfaceAddresses() -> [String: [String]] {
+        var first: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&first) == 0, let first else { return [:] }
+        defer { freeifaddrs(first) }
+        var result: [String: [String]] = [:]
+        for entry in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            guard let address = entry.pointee.ifa_addr else { continue }
+            let family = Int32(address.pointee.sa_family)
+            guard family == AF_INET || family == AF_INET6 else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            guard getnameinfo(address, socklen_t(address.pointee.sa_len), &host, socklen_t(host.count),
+                              nil, 0, NI_NUMERICHOST) == 0 else { continue }
+            result[String(cString: entry.pointee.ifa_name), default: []].append(String(cString: host))
+        }
+        return result
     }
 }
